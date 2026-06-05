@@ -20,7 +20,10 @@ public:
 
     // linear model matrices
     A_ = Eigen::Matrix3d::Identity();
-    B_ = Eigen::Matrix3d::Identity();
+    B_ = Eigen::Matrix<double, 3, 2>();
+    B_ << std::cos(theta) * dt, 0.0,
+          std::sin(theta) * dt, 0.0,
+          0.0, dt;
     C_ = Eigen::Matrix3d::Identity();
 
     // process noise
