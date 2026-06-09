@@ -3,24 +3,24 @@
 #include <eigen3/Eigen/Dense>
 #include <cmath>
 
-class KalmanFilter
+class ExtendedKalmanFilter
 {
 public:
     // Constructor
-    KalmanFilter()
+    ExtendedKalmanFilter()
     {
         // beginning state = [x, y, theta]
         mu_ << 0.0, 0.0, 0.0;
 
         // covariance in the beginning
         Sigma_ = Eigen::Matrix3d::Zero();
-        Sigma_(0, 0) = 0.5;
-        Sigma_(1, 1) = 0.5;
+        Sigma_(0, 0) = 0.2;
+        Sigma_(1, 1) = 0.2;
         Sigma_(2, 2) = 0.1;
 
         // measurement model matrix
         // z = C * x
-        // we measure [x, y, theta] directly from odometry
+        // here we measure [x, y, theta] directly from odometry
         C_ = Eigen::Matrix3d::Identity();
 
         // process noise
@@ -33,16 +33,19 @@ public:
         // measurement noise
         // describes uncertainty in the odometry measurement
         Q_ = Eigen::Matrix3d::Zero();
-        Q_(0, 0) = 0.05;
-        Q_(1, 1) = 0.05;
+        Q_(0, 0) = 0.01;
+        Q_(1, 1) = 0.01;
         Q_(2, 2) = 0.02;
+
+        // Jacobian of the motion model
+        G_ = Eigen::Matrix3d::Identity();
 
         // Kalman Gain
         K_ = Eigen::Matrix3d::Zero();
     }
 
     // Destructor
-    ~KalmanFilter() = default;
+    ~ExtendedKalmanFilter() = default;
 
     // set beginning state from outside, e.g. first odometry message
     void setState(const Eigen::Vector3d & mu)
@@ -56,27 +59,56 @@ public:
     // dt = time difference between two odometry messages
     Eigen::Vector3d predict(const Eigen::Vector2d & u, double dt)
     {
-        // current orientation
+        // current state
         const double theta = mu_(2);
 
         // control input
         const double v = u(0);
         const double omega = u(1);
 
-        // predicted state using TurtleBot/differential-drive motion model
+        // predicted state using nonlinear TurtleBot/differential-drive motion model
+        // this corresponds to g(mu, u, dt) in the Python code
         mu_bar_(0) = mu_(0) + v * std::cos(theta) * dt;
         mu_bar_(1) = mu_(1) + v * std::sin(theta) * dt;
         mu_bar_(2) = correctAngle(mu_(2) + omega * dt);
 
+        // compute Jacobian of the nonlinear motion model
+        // this corresponds to jacobian_g(mu, u, dt) in the Python code
+        computeJacobianG(u, dt);
+
         // predicted covariance
-        Sigma_bar_ = Sigma_ + R_;
+        // EKF difference compared to simple KF:
+        // use local linearization with Jacobian G
+        Sigma_bar_ = G_ * Sigma_ * G_.transpose() + R_;
 
         return mu_bar_;
+    }
+
+    // Compute Jacobian of the motion model
+    Eigen::Matrix3d computeJacobianG(const Eigen::Vector2d & u, double dt)
+    {
+        // current orientation
+        const double theta = mu_(2);
+
+        // linear velocity
+        const double v = u(0);
+
+        // Jacobian of:
+        // x'     = x + v * cos(theta) * dt
+        // y'     = y + v * sin(theta) * dt
+        // theta' = theta + omega * dt
+        G_ << 1.0, 0.0, -v * std::sin(theta) * dt,
+              0.0, 1.0,  v * std::cos(theta) * dt,
+              0.0, 0.0,  1.0;
+
+        return G_;
     }
 
     Eigen::Matrix3d computeKalmanGain()
     {
         // compute Kalman Gain
+        // measurement model is direct odometry pose:
+        // z = [x, y, theta]
         Eigen::Matrix3d S = C_ * Sigma_bar_ * C_.transpose() + Q_;
         K_ = Sigma_bar_ * C_.transpose() * S.inverse();
 
@@ -134,6 +166,11 @@ public:
         return Sigma_bar_;
     }
 
+    const Eigen::Matrix3d & jacobianG() const
+    {
+        return G_;
+    }
+
     const Eigen::Matrix3d & kalmanGain() const
     {
         return K_;
@@ -159,6 +196,9 @@ private:
 
     // measurement model matrix
     Eigen::Matrix3d C_;
+
+    // Jacobian of nonlinear motion model
+    Eigen::Matrix3d G_;
 
     // noise
     Eigen::Matrix3d R_;

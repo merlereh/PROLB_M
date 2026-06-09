@@ -4,22 +4,23 @@
 #include "rclcpp/rclcpp.hpp"
 
 #include "geometry_msgs/msg/twist.hpp"
-#include "nav_msgs/msg/odometry.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
-
+#include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/pose.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
-#include "kalman_filter.hpp"
+#include "particle_filter.hpp"
 
-class KalmanFilterNode : public rclcpp::Node
+class ParticleFilterNode : public rclcpp::Node
 {
 public:
   // Constructor
-  KalmanFilterNode()
-  : Node("kf_node")
+  ParticleFilterNode()
+  : Node("particle_filter_node")
   {
     // Subscriber for velocity commands.
     // This is the normal /cmd_vel topic.
@@ -67,13 +68,13 @@ public:
 
         // Initialize filter with first odometry measurement
         if (!initialized_) {
-          filter_.setState(measurement);
+          filter_.initializeParticlesAroundState(measurement);
           last_time_ = current_time;
           initialized_ = true;
 
           RCLCPP_INFO(
             this->get_logger(),
-            "Filter initialized: x=%.3f, y=%.3f, theta=%.3f",
+            "PF initialized: x=%.3f, y=%.3f, theta=%.3f",
             x,
             y,
             theta
@@ -97,12 +98,12 @@ public:
         Eigen::Vector2d control;
         control << last_v_, last_omega_;
 
-        // predict + correct
+        // predict + weight + resample
         Eigen::Vector3d estimate = filter_.update(control, measurement, dt);
 
         RCLCPP_INFO(
           this->get_logger(),
-          "KF estimate: x=%.3f, y=%.3f, theta=%.3f",
+          "PF estimate: x=%.3f, y=%.3f, theta=%.3f",
           estimate(0),
           estimate(1),
           estimate(2)
@@ -110,6 +111,9 @@ public:
 
         // Publish estimated pose
         publishPose(estimate, msg->header.stamp, msg->header.frame_id);
+
+        // Publish particles for RViz
+        publishParticles(msg->header.stamp, msg->header.frame_id);
       };
 
     odom_subscription_ =
@@ -119,17 +123,26 @@ public:
         odom_callback
       );
 
-    // Publisher for the estimated pose from the Kalman Filter
+    // Publisher for the estimated pose from the Particle Filter
     pose_publisher_ =
       this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/kf_pose",
+        "/pf_pose",
         10
       );
 
-    RCLCPP_INFO(this->get_logger(), "Kalman filter node started.");
+    // Publisher for particle cloud.
+    // Important: do not use /particle_cloud because Nav2/AMCL already uses it.
+    particle_publisher_ =
+      this->create_publisher<geometry_msgs::msg::PoseArray>(
+        "/my_particle_cloud",
+        10
+      );
+
+    RCLCPP_INFO(this->get_logger(), "Particle filter node started.");
     RCLCPP_INFO(this->get_logger(), "Subscribing to /cmd_vel");
     RCLCPP_INFO(this->get_logger(), "Subscribing to /odom");
-    RCLCPP_INFO(this->get_logger(), "Publishing to /kf_pose");
+    RCLCPP_INFO(this->get_logger(), "Publishing to /pf_pose");
+    RCLCPP_INFO(this->get_logger(), "Publishing particles to /my_particle_cloud");
   }
 
 private:
@@ -164,11 +177,7 @@ private:
 
     // Header
     pose_msg.header.stamp = stamp;
-    if (frame_id.empty()) {
-      pose_msg.header.frame_id = "odom";
-    } else {
-      pose_msg.header.frame_id = frame_id;
-    }
+    pose_msg.header.frame_id = frame_id.empty() ? "odom" : frame_id;
 
     // Position
     pose_msg.pose.pose.position.x = state(0);
@@ -181,19 +190,42 @@ private:
     q.setRPY(0.0, 0.0, state(2));
     pose_msg.pose.pose.orientation = tf2::toMsg(q);
 
-    // Initialize 6x6 covariance matrix with zeros
+    // Particle filter covariance is not explicitly calculated here.
+    // For now, initialize 6x6 covariance matrix with zeros.
     for (int i = 0; i < 36; ++i) {
       pose_msg.pose.covariance[i] = 0.0;
     }
 
-    // Fill only x, y and yaw covariance
-    const Eigen::Matrix3d & covariance = filter_.covariance();
-
-    pose_msg.pose.covariance[0] = covariance(0, 0);    // x
-    pose_msg.pose.covariance[7] = covariance(1, 1);    // y
-    pose_msg.pose.covariance[35] = covariance(2, 2);   // yaw
-
     pose_publisher_->publish(pose_msg);
+  }
+
+  // Publish particles as PoseArray for RViz
+  void publishParticles(
+    const rclcpp::Time & stamp,
+    const std::string & frame_id)
+  {
+    geometry_msgs::msg::PoseArray particle_msg;
+
+    particle_msg.header.stamp = stamp;
+    particle_msg.header.frame_id = frame_id.empty() ? "odom" : frame_id;
+
+    const auto & particles = filter_.particles();
+
+    for (const auto & particle : particles) {
+      geometry_msgs::msg::Pose pose;
+
+      pose.position.x = particle(0);
+      pose.position.y = particle(1);
+      pose.position.z = 0.0;
+
+      tf2::Quaternion q;
+      q.setRPY(0.0, 0.0, particle(2));
+      pose.orientation = tf2::toMsg(q);
+
+      particle_msg.poses.push_back(pose);
+    }
+
+    particle_publisher_->publish(particle_msg);
   }
 
   // Subscriber for normal velocity command /cmd_vel
@@ -202,11 +234,14 @@ private:
   // Subscriber for odometry /odom
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
 
-  // Publisher for filtered pose /kf_pose
+  // Publisher for filtered pose /pf_pose
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_publisher_;
 
-  // Kalman Filter object
-  KalmanFilter filter_;
+  // Publisher for particles /my_particle_cloud
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr particle_publisher_;
+
+  // Particle Filter object
+  ParticleFilter filter_;
 
   // Latest velocity command from /cmd_vel
   double last_v_{0.0};
@@ -220,7 +255,7 @@ private:
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<KalmanFilterNode>());
+  rclcpp::spin(std::make_shared<ParticleFilterNode>());
   rclcpp::shutdown();
   return 0;
 }

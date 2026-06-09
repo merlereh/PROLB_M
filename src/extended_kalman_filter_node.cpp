@@ -4,22 +4,21 @@
 #include "rclcpp/rclcpp.hpp"
 
 #include "geometry_msgs/msg/twist.hpp"
-#include "nav_msgs/msg/odometry.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
-
+#include "nav_msgs/msg/odometry.hpp"
 
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
-#include "kalman_filter.hpp"
+#include "extended_kalman_filter.hpp"
 
-class KalmanFilterNode : public rclcpp::Node
+class ExtendedKalmanFilterNode : public rclcpp::Node
 {
 public:
   // Constructor
-  KalmanFilterNode()
-  : Node("kf_node")
+  ExtendedKalmanFilterNode()
+  : Node("ekf_node")
   {
     // Subscriber for velocity commands.
     // This is the normal /cmd_vel topic.
@@ -73,7 +72,7 @@ public:
 
           RCLCPP_INFO(
             this->get_logger(),
-            "Filter initialized: x=%.3f, y=%.3f, theta=%.3f",
+            "EKF initialized: x=%.3f, y=%.3f, theta=%.3f",
             x,
             y,
             theta
@@ -102,7 +101,7 @@ public:
 
         RCLCPP_INFO(
           this->get_logger(),
-          "KF estimate: x=%.3f, y=%.3f, theta=%.3f",
+          "EKF estimate: x=%.3f, y=%.3f, theta=%.3f",
           estimate(0),
           estimate(1),
           estimate(2)
@@ -119,17 +118,17 @@ public:
         odom_callback
       );
 
-    // Publisher for the estimated pose from the Kalman Filter
+    // Publisher for the estimated pose from the Extended Kalman Filter
     pose_publisher_ =
       this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/kf_pose",
+        "/ekf_pose",
         10
       );
 
-    RCLCPP_INFO(this->get_logger(), "Kalman filter node started.");
+    RCLCPP_INFO(this->get_logger(), "Extended Kalman filter node started.");
     RCLCPP_INFO(this->get_logger(), "Subscribing to /cmd_vel");
     RCLCPP_INFO(this->get_logger(), "Subscribing to /odom");
-    RCLCPP_INFO(this->get_logger(), "Publishing to /kf_pose");
+    RCLCPP_INFO(this->get_logger(), "Publishing to /ekf_pose");
   }
 
 private:
@@ -164,11 +163,7 @@ private:
 
     // Header
     pose_msg.header.stamp = stamp;
-    if (frame_id.empty()) {
-      pose_msg.header.frame_id = "odom";
-    } else {
-      pose_msg.header.frame_id = frame_id;
-    }
+    pose_msg.header.frame_id = frame_id.empty() ? "odom" : frame_id;
 
     // Position
     pose_msg.pose.pose.position.x = state(0);
@@ -202,11 +197,11 @@ private:
   // Subscriber for odometry /odom
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
 
-  // Publisher for filtered pose /kf_pose
+  // Publisher for filtered pose /ekf_pose
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_publisher_;
 
-  // Kalman Filter object
-  KalmanFilter filter_;
+  // Extended Kalman Filter object
+  ExtendedKalmanFilter filter_;
 
   // Latest velocity command from /cmd_vel
   double last_v_{0.0};
@@ -220,7 +215,7 @@ private:
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<KalmanFilterNode>());
+  rclcpp::spin(std::make_shared<ExtendedKalmanFilterNode>());
   rclcpp::shutdown();
   return 0;
 }

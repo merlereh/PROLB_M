@@ -16,9 +16,9 @@ find_package(Eigen3 REQUIRED)
 
 include_directories(include)
 
-add_executable(kalman_filter_node src/kalman_filter_node.cpp)
+add_executable(kf_node src/kalman_filter_node.cpp)
 
-ament_target_dependencies(kalman_filter_node
+ament_target_dependencies(kf_node
   rclcpp
   geometry_msgs
   nav_msgs
@@ -27,10 +27,50 @@ ament_target_dependencies(kalman_filter_node
   tf2_geometry_msgs
 )
 
-target_link_libraries(kalman_filter_node Eigen3::Eigen)
+target_link_libraries(kf_node Eigen3::Eigen)
+
+add_executable(ekf_node src/extended_kalman_filter_node.cpp)
+
+ament_target_dependencies(ekf_node
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  tf2
+  tf2_geometry_msgs
+)
+
+target_link_libraries(ekf_node Eigen3::Eigen)
+
+add_executable(pf_node src/particle_filter_node.cpp)
+
+ament_target_dependencies(pf_node
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  sensor_msgs
+  tf2
+  tf2_geometry_msgs
+)
+
+target_link_libraries(pf_node Eigen3::Eigen)
+
+add_executable(evaluator_node src/evaluator_node.cpp)
+
+ament_target_dependencies(evaluator_node
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  tf2
+  tf2_geometry_msgs
+)
+
+target_link_libraries(evaluator_node Eigen3::Eigen)
 
 install(TARGETS
-  kalman_filter_node
+  kf_node
+  ekf_node
+  pf_node
+  evaluator_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
