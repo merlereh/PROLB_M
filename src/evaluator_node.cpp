@@ -7,9 +7,15 @@
 
 #include "nav_msgs/msg/odometry.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Matrix3x3.h"
+
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2/utils.h"
 
 class EvaluatorNode : public rclcpp::Node
 {
@@ -18,23 +24,27 @@ public:
   EvaluatorNode()
   : Node("evaluator_node")
   {
+    // Create TF buffer and listener.
+    // This allows the evaluator to transform poses from odom frame to map frame.
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
     // Open CSV file
     file_.open("trajectory_log.csv");
 
     // Write CSV header
-    file_ << "time,source,x,y,theta\n";
+    // All poses written into this file should be in the map frame.
+    file_ << "time,source,frame,x,y,theta\n";
 
     // Subscriber for odometry
     auto odom_callback =
       [this](nav_msgs::msg::Odometry::UniquePtr msg) -> void {
-        double time = msg->header.stamp.sec +
-          msg->header.stamp.nanosec * 1e-9;
-
-        double x = msg->pose.pose.position.x;
-        double y = msg->pose.pose.position.y;
-        double theta = getYawFromQuaternion(msg->pose.pose.orientation);
-
-        writeRow(time, "odom", x, y, theta);
+        logPoseInMapFrame(
+          msg->header.stamp,
+          "odom",
+          msg->header.frame_id,
+          msg->pose.pose
+        );
       };
 
     odom_subscription_ =
@@ -47,14 +57,12 @@ public:
     // Subscriber for Kalman Filter pose
     auto kf_callback =
       [this](geometry_msgs::msg::PoseWithCovarianceStamped::UniquePtr msg) -> void {
-        double time = msg->header.stamp.sec +
-          msg->header.stamp.nanosec * 1e-9;
-
-        double x = msg->pose.pose.position.x;
-        double y = msg->pose.pose.position.y;
-        double theta = getYawFromQuaternion(msg->pose.pose.orientation);
-
-        writeRow(time, "kf", x, y, theta);
+        logPoseInMapFrame(
+          msg->header.stamp,
+          "kf",
+          msg->header.frame_id,
+          msg->pose.pose
+        );
       };
 
     kf_subscription_ =
@@ -67,14 +75,12 @@ public:
     // Subscriber for Extended Kalman Filter pose
     auto ekf_callback =
       [this](geometry_msgs::msg::PoseWithCovarianceStamped::UniquePtr msg) -> void {
-        double time = msg->header.stamp.sec +
-          msg->header.stamp.nanosec * 1e-9;
-
-        double x = msg->pose.pose.position.x;
-        double y = msg->pose.pose.position.y;
-        double theta = getYawFromQuaternion(msg->pose.pose.orientation);
-
-        writeRow(time, "ekf", x, y, theta);
+        logPoseInMapFrame(
+          msg->header.stamp,
+          "ekf",
+          msg->header.frame_id,
+          msg->pose.pose
+        );
       };
 
     ekf_subscription_ =
@@ -87,14 +93,12 @@ public:
     // Subscriber for Particle Filter pose
     auto pf_callback =
       [this](geometry_msgs::msg::PoseWithCovarianceStamped::UniquePtr msg) -> void {
-        double time = msg->header.stamp.sec +
-          msg->header.stamp.nanosec * 1e-9;
-
-        double x = msg->pose.pose.position.x;
-        double y = msg->pose.pose.position.y;
-        double theta = getYawFromQuaternion(msg->pose.pose.orientation);
-
-        writeRow(time, "pf", x, y, theta);
+        logPoseInMapFrame(
+          msg->header.stamp,
+          "pf",
+          msg->header.frame_id,
+          msg->pose.pose
+        );
       };
 
     pf_subscription_ =
@@ -107,14 +111,12 @@ public:
     // Subscriber for AMCL pose from Nav2
     auto amcl_callback =
       [this](geometry_msgs::msg::PoseWithCovarianceStamped::UniquePtr msg) -> void {
-        double time = msg->header.stamp.sec +
-          msg->header.stamp.nanosec * 1e-9;
-
-        double x = msg->pose.pose.position.x;
-        double y = msg->pose.pose.position.y;
-        double theta = getYawFromQuaternion(msg->pose.pose.orientation);
-
-        writeRow(time, "amcl", x, y, theta);
+        logPoseInMapFrame(
+          msg->header.stamp,
+          "amcl",
+          msg->header.frame_id,
+          msg->pose.pose
+        );
       };
 
     amcl_subscription_ =
@@ -125,7 +127,7 @@ public:
       );
 
     RCLCPP_INFO(this->get_logger(), "Evaluator node started.");
-    RCLCPP_INFO(this->get_logger(), "Writing data to trajectory_log.csv");
+    RCLCPP_INFO(this->get_logger(), "Writing data to trajectory_log.csv in map frame.");
   }
 
   // Destructor
@@ -137,29 +139,71 @@ public:
   }
 
 private:
-  // Convert quaternion orientation to yaw angle
-  double getYawFromQuaternion(const geometry_msgs::msg::Quaternion & q_msg)
+  // Transform a PoseStamped message into the map frame
+  bool transformPoseToMap(
+    const geometry_msgs::msg::PoseStamped & input_pose,
+    geometry_msgs::msg::PoseStamped & output_pose)
   {
-    tf2::Quaternion q(
-      q_msg.x,
-      q_msg.y,
-      q_msg.z,
-      q_msg.w
-    );
+    try {
+      output_pose = tf_buffer_->transform(
+        input_pose,
+        "map",
+        tf2::durationFromSec(0.1)
+      );
 
-    double roll;
-    double pitch;
-    double yaw;
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Could not transform pose from '%s' to 'map': %s",
+        input_pose.header.frame_id.c_str(),
+        ex.what()
+      );
 
-    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+      return false;
+    }
+  }
 
-    return yaw;
+  // Convert incoming pose to map frame and write it to CSV
+  void logPoseInMapFrame(
+    const rclcpp::Time & stamp,
+    const std::string & source,
+    const std::string & frame_id,
+    const geometry_msgs::msg::Pose & pose)
+  {
+    // Create PoseStamped from incoming pose
+    geometry_msgs::msg::PoseStamped input_pose;
+    input_pose.header.stamp = stamp;
+    input_pose.header.frame_id = frame_id;
+    input_pose.pose = pose;
+
+    // Transform pose into map frame
+    geometry_msgs::msg::PoseStamped map_pose;
+
+    if (!transformPoseToMap(input_pose, map_pose)) {
+      return;
+    }
+
+    // Time
+    double time = map_pose.header.stamp.sec +
+      map_pose.header.stamp.nanosec * 1e-9;
+
+    // Position in map frame
+    double x = map_pose.pose.position.x;
+    double y = map_pose.pose.position.y;
+
+    // Orientation in map frame
+    double theta = tf2::getYaw(map_pose.pose.orientation);
+
+    // Write transformed pose
+    writeRow(time, source, "map", x, y, theta);
   }
 
   // Write one row into the CSV file
   void writeRow(
     double time,
     const std::string & source,
+    const std::string & frame,
     double x,
     double y,
     double theta)
@@ -171,6 +215,7 @@ private:
 
     file_ << time << ","
           << source << ","
+          << frame << ","
           << x << ","
           << y << ","
           << theta << "\n";
@@ -180,6 +225,10 @@ private:
 
   // CSV file
   std::ofstream file_;
+
+  // TF buffer and listener
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   // Subscribers
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;

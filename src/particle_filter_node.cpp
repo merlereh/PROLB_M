@@ -23,6 +23,19 @@ public:
   ParticleFilterNode()
   : Node("particle_filter_node")
   {
+
+    this->declare_parameter<std::string>("resampling_method", "multinomial");
+   
+    std::string resampling_method =
+        this->get_parameter("resampling_method").as_string();
+    filter_.setResamplingMethod(resampling_method);
+
+    RCLCPP_INFO(
+    this->get_logger(),
+    "Using resampling method: %s",
+    resampling_method.c_str()
+    );
+    
     // Subscriber for velocity commands.
     // This is the normal /cmd_vel topic.
     auto cmd_vel_callback =

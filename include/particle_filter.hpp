@@ -4,6 +4,7 @@
 #include <cmath>
 #include <random>
 #include <vector>
+#include <string>
 
 class ParticleFilter
 {
@@ -41,6 +42,16 @@ public:
 
     // Destructor
     ~ParticleFilter() = default;
+
+    // Set resampling method from outside, e.g. from ROS parameter
+    // Available methods:
+    // "multinomial"
+    // "systematic"
+    // "stratified"
+    void setResamplingMethod(const std::string & method)
+    {
+        resampling_method_ = method;
+    }
 
     // Initialize particles globally in the given x-y range
     void initializeParticles()
@@ -162,37 +173,24 @@ public:
             }
         } else {
             // fallback: reset to uniform weights
-            for (auto & weight : weights_) {
-                weight = 1.0 / static_cast<double>(num_particles_);
-            }
+            resetWeights();
         }
     }
 
     // Resampling step
+    // Calls the selected resampling strategy
     void resample()
     {
-        std::vector<Eigen::Vector3d> resampled_particles;
-        resampled_particles.reserve(num_particles_);
-
-        std::discrete_distribution<int> distribution(
-            weights_.begin(),
-            weights_.end()
-        );
-
-        for (int i = 0; i < num_particles_; ++i) {
-            int index = distribution(random_generator_);
-            resampled_particles.push_back(particles_[index]);
+        if (resampling_method_ == "multinomial") {
+            resampleMultinomial();
+        } else if (resampling_method_ == "systematic") {
+            resampleSystematic();
+        } else if (resampling_method_ == "stratified") {
+            resampleStratified();
+        } else {
+            // fallback if unknown method was selected
+            resampleMultinomial();
         }
-
-        particles_ = resampled_particles;
-
-        // After resampling all particles have the same weight again
-        for (auto & weight : weights_) {
-            weight = 1.0 / static_cast<double>(num_particles_);
-        }
-
-        // Mean of corrected particles
-        mu_ = computeMean();
     }
 
     // predict + correct + resample
@@ -229,6 +227,11 @@ public:
         return weights_;
     }
 
+    const std::string & resamplingMethod() const
+    {
+        return resampling_method_;
+    }
+
 private:
     static double correctAngle(double angle)
     {
@@ -258,6 +261,110 @@ private:
         return mean;
     }
 
+    // Reset all particle weights to uniform distribution
+    void resetWeights()
+    {
+        for (auto & weight : weights_) {
+            weight = 1.0 / static_cast<double>(num_particles_);
+        }
+    }
+
+    // Multinomial resampling
+    // This is the simplest strategy.
+    // It samples each new particle independently according to the weights.
+    void resampleMultinomial()
+    {
+        std::vector<Eigen::Vector3d> resampled_particles;
+        resampled_particles.reserve(num_particles_);
+
+        std::discrete_distribution<int> distribution(
+            weights_.begin(),
+            weights_.end()
+        );
+
+        for (int i = 0; i < num_particles_; ++i) {
+            int index = distribution(random_generator_);
+            resampled_particles.push_back(particles_[index]);
+        }
+
+        particles_ = resampled_particles;
+        resetWeights();
+
+        // Mean of corrected particles
+        mu_ = computeMean();
+    }
+
+    // Systematic resampling
+    // Uses one random starting point and then samples at fixed intervals.
+    // Usually has lower variance than multinomial resampling.
+    void resampleSystematic()
+    {
+        std::vector<Eigen::Vector3d> resampled_particles;
+        resampled_particles.reserve(num_particles_);
+
+        std::uniform_real_distribution<double> distribution(
+            0.0,
+            1.0 / static_cast<double>(num_particles_)
+        );
+
+        double start = distribution(random_generator_);
+        double cumulative_weight = weights_[0];
+        int index = 0;
+
+        for (int i = 0; i < num_particles_; ++i) {
+            double position =
+                start + static_cast<double>(i) / static_cast<double>(num_particles_);
+
+            while (position > cumulative_weight && index < num_particles_ - 1) {
+                index++;
+                cumulative_weight += weights_[index];
+            }
+
+            resampled_particles.push_back(particles_[index]);
+        }
+
+        particles_ = resampled_particles;
+        resetWeights();
+
+        // Mean of corrected particles
+        mu_ = computeMean();
+    }
+
+    // Stratified resampling
+    // Divides [0, 1] into N intervals and samples once inside each interval.
+    // This also reduces sampling variance compared to multinomial resampling.
+    void resampleStratified()
+    {
+        std::vector<Eigen::Vector3d> resampled_particles;
+        resampled_particles.reserve(num_particles_);
+
+        std::uniform_real_distribution<double> distribution(0.0, 1.0);
+
+        double cumulative_weight = weights_[0];
+        int index = 0;
+
+        for (int i = 0; i < num_particles_; ++i) {
+            double random_value = distribution(random_generator_);
+
+            double position =
+                (static_cast<double>(i) + random_value) /
+                static_cast<double>(num_particles_);
+
+            while (position > cumulative_weight && index < num_particles_ - 1) {
+                index++;
+                cumulative_weight += weights_[index];
+            }
+
+            resampled_particles.push_back(particles_[index]);
+        }
+
+        particles_ = resampled_particles;
+        resetWeights();
+
+        // Mean of corrected particles
+        mu_ = computeMean();
+    }
+
     // number of particles
     int num_particles_;
 
@@ -272,6 +379,9 @@ private:
 
     // weights
     std::vector<double> weights_;
+
+    // selected resampling method
+    std::string resampling_method_{"multinomial"};
 
     // state estimate
     Eigen::Vector3d mu_ = Eigen::Vector3d::Zero();

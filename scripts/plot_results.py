@@ -16,7 +16,7 @@ def main():
     # Create figure
     plt.figure(figsize=(8, 6))
 
-    sources_to_plot = ["odom", "kf", "ekf", "pf"]
+    sources_to_plot = ["amcl", "kf", "ekf", "pf"]
 
     for source in sources_to_plot:
         source_data = data[data["source"] == source]
