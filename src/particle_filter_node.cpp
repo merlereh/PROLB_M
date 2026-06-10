@@ -1,5 +1,6 @@
 #include <memory>
 #include <string>
+#include <cmath>
 
 #include "rclcpp/rclcpp.hpp"
 
@@ -30,6 +31,11 @@ public:
         // u = [v, omega]
         last_v_ = msg->linear.x;
         last_omega_ = msg->angular.z;
+
+        // /cmd_vel has no header timestamp.
+        // Therefore we store the time when this node receives the message
+        last_cmd_time_ = this->now();
+        has_cmd_vel_ = true;
 
         RCLCPP_INFO(
           this->get_logger(),
@@ -93,14 +99,34 @@ public:
           return;
         }
 
+        // Check if a velocity command was received before
+        if (!has_cmd_vel_) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Skipping update because no cmd_vel was received yet."
+        );
+        return;
+        }
+
+        // Check if latest /cmd_vel and current /odom are close enough in time
+        double cmd_odom_dt = std::abs((current_time - last_cmd_time_).seconds());
+
+        if (cmd_odom_dt > max_time_difference_) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Skipping update because cmd_vel and odom are not synchronized. Difference: %.3f s",
+            cmd_odom_dt
+        );
+        return;
+        }
+
         // Control input u = [v, omega]
         // Values come from the latest /cmd_vel message.
         Eigen::Vector2d control;
         control << last_v_, last_omega_;
 
-        // predict + weight + resample
+        // predict + correct
         Eigen::Vector3d estimate = filter_.update(control, measurement, dt);
-
         RCLCPP_INFO(
           this->get_logger(),
           "PF estimate: x=%.3f, y=%.3f, theta=%.3f",
@@ -246,7 +272,14 @@ private:
   // Latest velocity command from /cmd_vel
   double last_v_{0.0};
   double last_omega_{0.0};
-
+  
+  // Time of latest velocity command
+  rclcpp::Time last_cmd_time_;
+  bool has_cmd_vel_{false};
+  
+  // Maximum allowed time difference between cmd_vel and odom
+  double max_time_difference_{0.10};
+  
   // Time handling
   rclcpp::Time last_time_;
   bool initialized_{false};
