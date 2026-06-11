@@ -1,3 +1,9 @@
+"""
+python3 scripts/plot_results.py
+
+"""
+
+
 import pandas as pd
 import matplotlib.pyplot as plt
 

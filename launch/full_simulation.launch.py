@@ -1,0 +1,88 @@
+from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+
+
+def generate_launch_description():
+
+    # Start Nav2 TurtleBot simulation
+    nav2_simulation = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('nav2_bringup'),
+                'launch',
+                'tb3_simulation_launch.py'
+            ])
+        ),
+        launch_arguments={
+            'headless': 'True'
+        }.items()
+    )
+
+    # Kalman Filter node
+    kf_node = Node(
+        package='probl_m',
+        executable='kf_node',
+        name='kf_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True}
+        ]
+    )
+
+    # Extended Kalman Filter node
+    ekf_node = Node(
+        package='probl_m',
+        executable='ekf_node',
+        name='ekf_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True}
+        ]
+    )
+
+    # Particle Filter node
+    pf_node = Node(
+        package='probl_m',
+        executable='pf_node',
+        name='pf_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True},
+            {'resampling_method': 'multinomial'}
+        ]
+    )
+
+    # Evaluator node
+    evaluator_node = Node(
+        package='probl_m',
+        executable='evaluator_node',
+        name='evaluator_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True}
+        ]
+    )
+
+
+
+    return LaunchDescription([
+        nav2_simulation,
+
+        # Wait a few seconds so Nav2, Gazebo and TF can start first.
+        TimerAction(
+            period=5.0,
+            actions=[
+                kf_node,
+                ekf_node,
+                pf_node,
+                evaluator_node,
+
+                # Uncomment this if you want automatic predefined movement.
+                # trajectory_commander_node,
+            ]
+        )
+    ])
