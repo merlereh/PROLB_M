@@ -1,3 +1,11 @@
+"""
+cd ~/ros2_ws
+colcon build --packages-select probl_m
+source install/setup.bash
+cd ~/ros2_ws/src/probl_m
+ros2 launch probl_m full_simulation.launch.py
+"""
+
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -67,7 +75,17 @@ def generate_launch_description():
         ]
     )
 
-
+    # Nav2 waypoint node
+    # Sets initial pose and sends multiple Nav2 goals automatically.
+    nav2_waypoint_node = Node(
+        package='probl_m',
+        executable='nav2_waypoint_node',
+        name='nav2_waypoint_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True}
+        ]
+    )
 
     return LaunchDescription([
         nav2_simulation,
@@ -80,9 +98,14 @@ def generate_launch_description():
                 ekf_node,
                 pf_node,
                 evaluator_node,
+            ]
+        ),
 
-                # Uncomment this if you want automatic predefined movement.
-                # trajectory_commander_node,
+        # Start waypoint navigation after Nav2 had more time to initialize.
+        TimerAction(
+            period=20.0,
+            actions=[
+                nav2_waypoint_node,
             ]
         )
     ])

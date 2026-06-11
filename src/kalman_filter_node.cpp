@@ -1,6 +1,7 @@
 #include <memory>
 #include <string>
 #include <cmath>
+#include <random>
 
 #include "rclcpp/rclcpp.hpp"
 
@@ -37,7 +38,7 @@ public:
 
         RCLCPP_INFO(
           this->get_logger(),
-          "cmd_vel: linear.x = %.3f, angular.z = %.3f",
+          "Last Velocity command: v=%.3f, omega=%.3f",
           last_v_,
           last_omega_
         );
@@ -62,8 +63,7 @@ public:
         double x = msg->pose.pose.position.x;
         double y = msg->pose.pose.position.y;
 
-        // Read orientation from odometry pose.
-        // ROS stores orientation as quaternion, but our filter uses theta/yaw.
+        // Read orientation from odometry pose
         double theta = getYawFromQuaternion(msg->pose.pose.orientation);
 
         // Measurement z = [x, y, theta]
@@ -78,7 +78,7 @@ public:
 
           RCLCPP_INFO(
             this->get_logger(),
-            "Filter initialized: x=%.3f, y=%.3f, theta=%.3f",
+            "Measurement: x=%.3f, y=%.3f, theta=%.3f",
             x,
             y,
             theta
@@ -119,7 +119,7 @@ public:
         }
 
         // Control input u = [v, omega]
-        // Values come from the latest /cmd_vel message.
+        // Values come from the latest /cmd_vel message + noise.
         Eigen::Vector2d control;
         control << last_v_, last_omega_;
 
@@ -242,7 +242,7 @@ private:
   bool has_cmd_vel_{false};
 
   // Maximum allowed time difference between cmd_vel and odom
-  double max_time_difference_{0.10};
+  double max_time_difference_{0.50};
 
   // Time handling
   rclcpp::Time last_time_;

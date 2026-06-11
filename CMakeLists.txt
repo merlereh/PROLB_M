@@ -9,6 +9,8 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -66,6 +68,19 @@ ament_target_dependencies(evaluator_node
   tf2_geometry_msgs
 )
 
+
+add_executable(nav2_waypoint_node src/navigation_node.cpp)
+
+ament_target_dependencies(nav2_waypoint_node
+  rclcpp
+  rclcpp_action
+  geometry_msgs
+  nav2_msgs
+  tf2
+  tf2_geometry_msgs
+)
+
+
 target_link_libraries(evaluator_node Eigen3::Eigen)
 
 install(TARGETS
@@ -73,6 +88,7 @@ install(TARGETS
   ekf_node
   pf_node
   evaluator_node
+  nav2_waypoint_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

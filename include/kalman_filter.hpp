@@ -26,7 +26,7 @@ public:
         // process noise
         // describes uncertainty in the motion model
         R_ = Eigen::Matrix3d::Zero();
-        R_(0, 0) = 0.05;
+        R_(0, 0) = 0.1;
         R_(1, 1) = 0.05;
         R_(2, 2) = 0.02;
 
