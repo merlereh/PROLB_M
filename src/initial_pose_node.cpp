@@ -1,0 +1,88 @@
+#include <memory>
+#include <chrono>
+#include <cmath>
+
+#include "rclcpp/rclcpp.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+
+using namespace std::chrono_literals;
+
+class InitialPoseNode : public rclcpp::Node
+{
+public:
+  InitialPoseNode()
+  : Node("initial_pose_node"), published_(false)
+  {
+    publisher_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+      "/initialpose",
+      10
+    );
+
+    // Kurz warten, damit AMCL/RViz den Publisher schon sehen kann
+    timer_ = this->create_wall_timer(
+      1s,
+      std::bind(&InitialPoseNode::publish_initial_pose, this)
+    );
+  }
+
+private:
+  void publish_initial_pose()
+  {
+    if (published_) {
+      return;
+    }
+
+    const double x = -2.0;
+    const double y = -0.5;
+    const double yaw = 0.0;
+
+    geometry_msgs::msg::PoseWithCovarianceStamped msg;
+
+    msg.header.stamp = this->now();
+    msg.header.frame_id = "map";
+
+    msg.pose.pose.position.x = x;
+    msg.pose.pose.position.y = y;
+    msg.pose.pose.position.z = 0.0;
+
+    msg.pose.pose.orientation.x = 0.0;
+    msg.pose.pose.orientation.y = 0.0;
+    msg.pose.pose.orientation.z = std::sin(yaw / 2.0);
+    msg.pose.pose.orientation.w = std::cos(yaw / 2.0);
+
+    msg.pose.covariance = {
+      0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.25, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0685
+    };
+
+    publisher_->publish(msg);
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Published initial pose: x=%.2f, y=%.2f, yaw=%.2f",
+      x, y, yaw
+    );
+
+    published_ = true;
+    timer_->cancel();
+  }
+
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr publisher_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  bool published_;
+};
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+
+  auto node = std::make_shared<InitialPoseNode>();
+  rclcpp::spin(node);
+
+  rclcpp::shutdown();
+  return 0;
+}

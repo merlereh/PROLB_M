@@ -68,27 +68,21 @@ ament_target_dependencies(evaluator_node
   tf2_geometry_msgs
 )
 
+add_executable(initial_pose_node src/initial_pose_node.cpp)
 
-add_executable(nav2_waypoint_node src/navigation_node.cpp)
-
-ament_target_dependencies(nav2_waypoint_node
+ament_target_dependencies(initial_pose_node
   rclcpp
-  rclcpp_action
   geometry_msgs
-  nav2_msgs
-  tf2
-  tf2_geometry_msgs
 )
-
 
 target_link_libraries(evaluator_node Eigen3::Eigen)
 
 install(TARGETS
+  initial_pose_node
   kf_node
   ekf_node
   pf_node
   evaluator_node
-  nav2_waypoint_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
