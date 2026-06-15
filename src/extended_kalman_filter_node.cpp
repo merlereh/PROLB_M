@@ -35,7 +35,7 @@ public:
         last_cmd_time_ = this->now();
         has_cmd_vel_ = true;
 
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           this->get_logger(),
           "cmd_vel: linear.x = %.3f, angular.z = %.3f",
           last_v_,
@@ -126,7 +126,7 @@ public:
         // predict + correct
         Eigen::Vector3d estimate = filter_.update(control, measurement, dt);
 
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           this->get_logger(),
           "EKF estimate: x=%.3f, y=%.3f, theta=%.3f",
           estimate(0),

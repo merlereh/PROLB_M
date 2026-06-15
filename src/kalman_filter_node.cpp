@@ -36,7 +36,7 @@ public:
         last_cmd_time_ = this->now();
         has_cmd_vel_ = true;
 
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           this->get_logger(),
           "Last Velocity command: v=%.3f, omega=%.3f",
           last_v_,
@@ -125,7 +125,7 @@ public:
 
         // predict + correct
         Eigen::Vector3d estimate = filter_.update(control, measurement, dt);
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           this->get_logger(),
           "KF estimate: x=%.3f, y=%.3f, theta=%.3f",
           estimate(0),
