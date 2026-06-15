@@ -75,10 +75,20 @@ ament_target_dependencies(initial_pose_node
   geometry_msgs
 )
 
+add_executable(waypoint_node src/waypoint_node.cpp)
+
+ament_target_dependencies(waypoint_node
+  rclcpp
+  rclcpp_action
+  nav2_msgs
+  geometry_msgs
+)
+
 target_link_libraries(evaluator_node Eigen3::Eigen)
 
 install(TARGETS
   initial_pose_node
+  waypoint_node
   kf_node
   ekf_node
   pf_node

@@ -35,9 +35,9 @@ public:
     "Using resampling method: %s",
     resampling_method.c_str()
     );
-    
-    // Subscriber for velocity commands.
-    // This is the normal /cmd_vel topic.
+
+    // Subscriber for velocity commands
+    // This is the normal /cmd_vel topic
     auto cmd_vel_callback =
       [this](geometry_msgs::msg::Twist::UniquePtr msg) -> void {
         // Save latest control input
@@ -45,7 +45,7 @@ public:
         last_v_ = msg->linear.x;
         last_omega_ = msg->angular.z;
 
-        // /cmd_vel has no header timestamp.
+        // /cmd_vel has no header timestamp
         // Therefore we store the time when this node receives the message
         last_cmd_time_ = this->now();
         has_cmd_vel_ = true;

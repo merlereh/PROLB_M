@@ -75,8 +75,18 @@ def generate_launch_description():
         ]
     )
 
-    # Nav2 waypoint node
-    # Sets initial pose and sends multiple Nav2 goals automatically.
+    # Initial pose node
+    initial_pose_node = Node(
+        package='probl_m',
+        executable='initial_pose_node',
+        name='initial_pose_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True}
+        ]
+    )
+
+    # Nav2 waypoint node — startet nachdem Initpose gesetzt wurde
     nav2_waypoint_node = Node(
         package='probl_m',
         executable='nav2_waypoint_node',
@@ -90,9 +100,15 @@ def generate_launch_description():
     return LaunchDescription([
         nav2_simulation,
 
-        # Wait a few seconds so Nav2, Gazebo and TF can start first.
         TimerAction(
-            period=5.0,
+            period=10.0,
+            actions=[
+                initial_pose_node,
+            ]
+        ),
+
+        TimerAction(
+            period=15.0,
             actions=[
                 kf_node,
                 ekf_node,
@@ -101,11 +117,11 @@ def generate_launch_description():
             ]
         ),
 
-        # Start waypoint navigation after Nav2 had more time to initialize.
+        # Waypoints erst nach Initpose senden
         TimerAction(
             period=20.0,
             actions=[
                 nav2_waypoint_node,
             ]
-        )
+        ),
     ])

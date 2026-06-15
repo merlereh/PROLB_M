@@ -270,8 +270,7 @@ private:
     }
 
     // Multinomial resampling
-    // This is the simplest strategy.
-    // It samples each new particle independently according to the weights.
+    // samples each new particle independently according to the weights
     void resampleMultinomial()
     {
         std::vector<Eigen::Vector3d> resampled_particles;
@@ -295,8 +294,8 @@ private:
     }
 
     // Systematic resampling
-    // Uses one random starting point and then samples at fixed intervals.
-    // Usually has lower variance than multinomial resampling.
+    // Uses one random starting point and then samples at fixed intervals
+    // Usually has lower variance than multinomial resampling
     void resampleSystematic()
     {
         std::vector<Eigen::Vector3d> resampled_particles;
@@ -331,8 +330,8 @@ private:
     }
 
     // Stratified resampling
-    // Divides [0, 1] into N intervals and samples once inside each interval.
-    // This also reduces sampling variance compared to multinomial resampling.
+    // Divides [0, 1] into N intervals and samples once inside each interval
+    // reduces sampling variance compared to multinomial resampling
     void resampleStratified()
     {
         std::vector<Eigen::Vector3d> resampled_particles;

@@ -11,34 +11,37 @@ class InitialPoseNode : public rclcpp::Node
 {
 public:
   InitialPoseNode()
-  : Node("initial_pose_node"), published_(false)
+  : Node("initial_pose_node")
   {
     publisher_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
       "/initialpose",
-      10
+      rclcpp::QoS(10)
     );
 
-    // Kurz warten, damit AMCL/RViz den Publisher schon sehen kann
+    // Retry every 1 s until AMCL has a subscriber and we confirmed the send.
     timer_ = this->create_wall_timer(
       1s,
-      std::bind(&InitialPoseNode::publish_initial_pose, this)
+      std::bind(&InitialPoseNode::try_publish, this)
     );
+
+    RCLCPP_INFO(this->get_logger(), "Waiting for AMCL to subscribe to /initialpose ...");
   }
 
 private:
-  void publish_initial_pose()
+  void try_publish()
   {
-    if (published_) {
+    // Only send once AMCL is actually listening.
+    if (publisher_->get_subscription_count() == 0) {
+      RCLCPP_INFO(this->get_logger(), "No subscriber yet on /initialpose, retrying ...");
       return;
     }
 
-    const double x = -2.0;
-    const double y = -0.5;
-    const double yaw = 0.0;
+    const double x   = -2.0;
+    const double y   = -0.5;
+    const double yaw =  0.0;
 
     geometry_msgs::msg::PoseWithCovarianceStamped msg;
-
-    msg.header.stamp = this->now();
+    msg.header.stamp    = this->now();
     msg.header.frame_id = "map";
 
     msg.pose.pose.position.x = x;
@@ -53,36 +56,32 @@ private:
     msg.pose.covariance = {
       0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
       0.0, 0.25, 0.0, 0.0, 0.0, 0.0,
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.0685
+      0.0, 0.0,  0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0,  0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0,  0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0,  0.0, 0.0, 0.0, 0.0685
     };
 
     publisher_->publish(msg);
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Published initial pose: x=%.2f, y=%.2f, yaw=%.2f",
+      "Initial pose sent: x=%.2f, y=%.2f, yaw=%.2f",
       x, y, yaw
     );
 
-    published_ = true;
+    // Stop retrying — job done.
     timer_->cancel();
   }
 
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
-  bool published_;
 };
 
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-
-  auto node = std::make_shared<InitialPoseNode>();
-  rclcpp::spin(node);
-
+  rclcpp::spin(std::make_shared<InitialPoseNode>());
   rclcpp::shutdown();
   return 0;
 }
