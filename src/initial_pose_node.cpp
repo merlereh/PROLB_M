@@ -46,34 +46,26 @@ public:
   }
 
 private:
-  // S-shaped trajectory through a 3x3 grid.
-  // Column 1 (x=-0.9): bottom to top
-  // Column 2 (x= 0.0): top to bottom
-  // Column 3 (x=+0.9): bottom to top
-  // Start and end at initial pose (-2.0, -0.5).
+  // Waypoints: {x, y, yaw}
+  // Yaw at point 10 and 11 corrected to match direction of travel:
+  //   WP10 (0.56, -0.45): approaching from (0.85, 0.5) -> direction ~atan2(-0.95, -0.29) ~ -1.86 rad
+  //   WP11 (0.25, -0.61): approaching from (0.56,-0.45) -> direction ~atan2(-0.16, -0.31) ~ -2.67 rad
   const std::vector<std::array<double, 3>> waypoints_ = {
-    // Start position
-    { -2.0,  -0.5,  0.0  },
-
-    // Enter grid from the left
-    { -0.9,  -0.9,  1.57 },  // col 1, row 1 (bottom-left) — facing up
-
-    // Column 1: bottom → top
-    { -0.9,   0.0,  1.57 },  // col 1, row 2
-    { -0.9,   0.9,  0.0  },  // col 1, row 3 (top-left)   — turn right
-
-    // Column 2: top → bottom
-    {  0.0,   0.9, -1.57 },  // col 2, row 3 (top-center) — facing down
-    {  0.0,   0.0, -1.57 },  // col 2, row 2
-    {  0.0,  -0.9,  0.0  },  // col 2, row 1 (bottom-center) — turn right
-
-    // Column 3: bottom → top
-    {  0.9,  -0.9,  1.57 },  // col 3, row 1 (bottom-right) — facing up
-    {  0.9,   0.0,  1.57 },  // col 3, row 2
-    {  0.9,   0.9,  3.14 },  // col 3, row 3 (top-right)    — facing left
-
-    // Return to start
-    { -2.0,  -0.5,  0.0  },
+    { -2.0,  -0.5,   0.0  },
+    { -0.5,  -0.5,   1.4  },
+    { -0.5,   0.5,   3.14 },
+    { -1.75,  1.3,   1.4  },
+    { -1.35,  1.75,  0.2  },
+    { -0.1,   1.9,   0.0  },
+    {  1.3,   1.6,   0.1  },
+    {  1.7,   0.55, -3.14 },
+    {  0.85,  0.5,  -1.5  },
+    {  0.56, -0.45, -1.86 },  // corrected: facing direction of travel toward WP11
+    {  0.25, -0.61, -2.67 },  // corrected: facing direction of travel toward WP12
+    { -0.5,  -0.65, -1.7  },
+    { -0.65, -1.6,  -3.14 },
+    { -1.6,  -1.5,   2.2  },
+    { -2.0,  -0.5,   0.0  },
   };
 
   void tick()
