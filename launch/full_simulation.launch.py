@@ -87,11 +87,11 @@ def generate_launch_description():
         TimerAction(
             period=5.0,
             actions=[
-                kf_node,
-                ekf_node,
-                pf_node,
-                evaluator_node,
-                initial_pose_node,  # handles init pose + waypoints internally
+                #kf_node,
+                #ekf_node,
+                #pf_node,
+                #evaluator_node,
+                #initial_pose_node,  
             ]
         ),
     ])

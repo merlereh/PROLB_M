@@ -6,12 +6,29 @@
 #include <vector>
 #include <string>
 
+// State: [x, y, theta, vx, vy, theta_dot]
+// Each particle represents a full 6D state hypothesis.
+//
+// Control input: u = [v, omega]  (from /cmd_vel)
+// Measurement:   z = [x, y, theta]  (from /odom, absolute pose)
+//
+// Motion model per particle (same nonlinear model as EKF):
+//   x_new        = x + vx * dt
+//   y_new        = y + vy * dt
+//   theta_new    = theta + theta_dot * dt
+//   vx_new       = v * cos(theta) + noise
+//   vy_new       = v * sin(theta) + noise
+//   theta_dot_new = omega + noise
+//
+// Weighting uses only the observable part z = [x, y, theta].
+
+using Vector6d = Eigen::Matrix<double, 6, 1>;
+
 class ParticleFilter
 {
 public:
-    // Constructor
     ParticleFilter(
-        int num_particles = 1000,
+        int num_particles = 500,
         double x_min = 0.0,
         double x_max = 6.0,
         double y_min = 0.0,
@@ -23,138 +40,125 @@ public:
       y_max_(y_max),
       random_generator_(std::random_device{}())
     {
-        // process noise
-        // describes uncertainty in the motion model
-        R_ = Eigen::Matrix3d::Zero();
-        R_(0, 0) = 0.05;
-        R_(1, 1) = 0.05;
-        R_(2, 2) = 0.02;
+        // Process noise R (6x6)
+        R_ = Eigen::Matrix<double, 6, 6>::Zero();
+        R_(0, 0) = 0.05;   // x
+        R_(1, 1) = 0.05;   // y
+        R_(2, 2) = 0.02;   // theta
+        R_(3, 3) = 0.1;    // vx
+        R_(4, 4) = 0.05;   // vy
+        R_(5, 5) = 0.05;   // theta_dot
 
-        // measurement noise
-        // describes uncertainty in the odometry measurement
+        // Measurement noise Q (3x3) — used for particle weighting
         Q_ = Eigen::Matrix3d::Zero();
-        Q_(0, 0) = 0.05;
-        Q_(1, 1) = 0.05;
-        Q_(2, 2) = 0.03;
+        Q_(0, 0) = 0.05;   // x
+        Q_(1, 1) = 0.05;   // y
+        Q_(2, 2) = 0.03;   // theta
 
         initializeParticles();
     }
 
-    // Destructor
     ~ParticleFilter() = default;
 
-    // Set resampling method from outside, e.g. from ROS parameter
-    // Available methods:
-    // "multinomial"
-    // "systematic"
-    // "stratified"
     void setResamplingMethod(const std::string & method)
     {
         resampling_method_ = method;
     }
 
     // Initialize particles globally in the given x-y range
+    // Velocities start at zero
     void initializeParticles()
     {
         particles_.clear();
         weights_.clear();
 
-        std::uniform_real_distribution<double> x_distribution(x_min_, x_max_);
-        std::uniform_real_distribution<double> y_distribution(y_min_, y_max_);
-        std::uniform_real_distribution<double> theta_distribution(-M_PI, M_PI);
+        std::uniform_real_distribution<double> x_dist(x_min_, x_max_);
+        std::uniform_real_distribution<double> y_dist(y_min_, y_max_);
+        std::uniform_real_distribution<double> theta_dist(-M_PI, M_PI);
 
         for (int i = 0; i < num_particles_; ++i) {
-            Eigen::Vector3d particle;
-
-            particle << x_distribution(random_generator_),
-                        y_distribution(random_generator_),
-                        theta_distribution(random_generator_);
-
-            particles_.push_back(particle);
+            Vector6d p = Vector6d::Zero();
+            p(0) = x_dist(random_generator_);
+            p(1) = y_dist(random_generator_);
+            p(2) = theta_dist(random_generator_);
+            // vx, vy, theta_dot start at 0
+            particles_.push_back(p);
             weights_.push_back(1.0 / static_cast<double>(num_particles_));
         }
 
-        mu_ = computeMean();
+        mu_     = computeMean();
         mu_bar_ = mu_;
     }
 
-    // Initialize particles around a given start state
-    // This is useful when the first odometry measurement is available
-    void initializeParticlesAroundState(const Eigen::Vector3d & initial_state)
+    // Initialize particles around a known first pose
+    void initializeParticlesAroundState(const Eigen::Vector3d & initial_pose)
     {
         particles_.clear();
         weights_.clear();
 
-        std::normal_distribution<double> noise_x(0.0, 0.2);
-        std::normal_distribution<double> noise_y(0.0, 0.2);
-        std::normal_distribution<double> noise_theta(0.0, 0.1);
+        std::normal_distribution<double> nx(0.0, 0.2);
+        std::normal_distribution<double> ny(0.0, 0.2);
+        std::normal_distribution<double> ntheta(0.0, 0.1);
 
         for (int i = 0; i < num_particles_; ++i) {
-            Eigen::Vector3d particle;
-
-            particle << initial_state(0) + noise_x(random_generator_),
-                        initial_state(1) + noise_y(random_generator_),
-                        correctAngle(initial_state(2) + noise_theta(random_generator_));
-
-            particles_.push_back(particle);
+            Vector6d p = Vector6d::Zero();
+            p(0) = initial_pose(0) + nx(random_generator_);
+            p(1) = initial_pose(1) + ny(random_generator_);
+            p(2) = correctAngle(initial_pose(2) + ntheta(random_generator_));
+            // vx, vy, theta_dot start at 0
+            particles_.push_back(p);
             weights_.push_back(1.0 / static_cast<double>(num_particles_));
         }
 
-        mu_ = computeMean();
+        mu_     = computeMean();
         mu_bar_ = mu_;
     }
 
     // Prediction step
-    // u = [v, omega]
-    // dt = time difference between two odometry messages
-    Eigen::Vector3d predict(const Eigen::Vector2d & u, double dt)
+    // Each particle is propagated with the nonlinear motion model + noise
+    Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
-        // control input
-        const double v = u(0);
+        const double v     = u(0);
         const double omega = u(1);
 
-        // Motion noise distributions
-        std::normal_distribution<double> noise_x(0.0, std::sqrt(R_(0, 0)));
-        std::normal_distribution<double> noise_y(0.0, std::sqrt(R_(1, 1)));
-        std::normal_distribution<double> noise_theta(0.0, std::sqrt(R_(2, 2)));
+        std::normal_distribution<double> n_x     (0.0, std::sqrt(R_(0, 0)));
+        std::normal_distribution<double> n_y     (0.0, std::sqrt(R_(1, 1)));
+        std::normal_distribution<double> n_theta (0.0, std::sqrt(R_(2, 2)));
+        std::normal_distribution<double> n_vx    (0.0, std::sqrt(R_(3, 3)));
+        std::normal_distribution<double> n_vy    (0.0, std::sqrt(R_(4, 4)));
+        std::normal_distribution<double> n_tdot  (0.0, std::sqrt(R_(5, 5)));
 
-        // Move every particle using the motion model
-        for (auto & particle : particles_) {
-            const double theta = particle(2);
+        for (auto & p : particles_) {
+            const double theta = p(2);
 
-            particle(0) = particle(0)
-                + v * std::cos(theta) * dt
-                + noise_x(random_generator_);
+            // Propagate position from current velocity state
+            p(0) = p(0) + p(3) * dt + n_x(random_generator_);
+            p(1) = p(1) + p(4) * dt + n_y(random_generator_);
+            p(2) = correctAngle(p(2) + p(5) * dt + n_theta(random_generator_));
 
-            particle(1) = particle(1)
-                + v * std::sin(theta) * dt
-                + noise_y(random_generator_);
-
-            particle(2) = correctAngle(
-                particle(2)
-                + omega * dt
-                + noise_theta(random_generator_)
-            );
+            // Update velocity states from cmd_vel with cos/sin + noise
+            p(3) = v * std::cos(theta) + n_vx(random_generator_);
+            p(4) = v * std::sin(theta) + n_vy(random_generator_);
+            p(5) = omega               + n_tdot(random_generator_);
         }
 
-        // Mean of predicted particles
         mu_bar_ = computeMean();
-
         return mu_bar_;
     }
 
     // Weighting step
-    // z = [x, y, theta]
+    // z = [x, y, theta]  — we can only compare the observable part
     void computeWeights(const Eigen::Vector3d & z)
     {
         double weight_sum = 0.0;
 
         for (int i = 0; i < num_particles_; ++i) {
-            Eigen::Vector3d error = particles_[i] - z;
-            error(2) = correctAngle(error(2));
+            // Compare only [x, y, theta] part of the particle against measurement
+            Eigen::Vector3d error;
+            error(0) = particles_[i](0) - z(0);
+            error(1) = particles_[i](1) - z(1);
+            error(2) = correctAngle(particles_[i](2) - z(2));
 
-            // Same idea as in the Python code:
-            // weight = exp(-0.5 * sum(error^2 / Q_diag))
             double exponent =
                 -0.5 * (
                     (error(0) * error(0)) / Q_(0, 0) +
@@ -162,23 +166,20 @@ public:
                     (error(2) * error(2)) / Q_(2, 2)
                 );
 
-            weights_[i] = std::exp(exponent) + 1e-300;
-            weight_sum += weights_[i];
+            weights_[i]  = std::exp(exponent) + 1e-300;
+            weight_sum  += weights_[i];
         }
 
-        // Normalize weights
         if (weight_sum > 0.0) {
-            for (auto & weight : weights_) {
-                weight = weight / weight_sum;
+            for (auto & w : weights_) {
+                w /= weight_sum;
             }
         } else {
-            // fallback: reset to uniform weights
             resetWeights();
         }
     }
 
     // Resampling step
-    // Calls the selected resampling strategy
     void resample()
     {
         if (resampling_method_ == "multinomial") {
@@ -188,13 +189,12 @@ public:
         } else if (resampling_method_ == "stratified") {
             resampleStratified();
         } else {
-            // fallback if unknown method was selected
             resampleMultinomial();
         }
     }
 
-    // predict + correct + resample
-    Eigen::Vector3d update(
+    // Full update: predict → weight → resample
+    Vector6d update(
         const Eigen::Vector2d & u,
         const Eigen::Vector3d & z,
         double dt)
@@ -202,35 +202,15 @@ public:
         predict(u, dt);
         computeWeights(z);
         resample();
-
         return mu_;
     }
 
-    // getter
-    const Eigen::Vector3d & state() const
-    {
-        return mu_;
-    }
-
-    const Eigen::Vector3d & predictedState() const
-    {
-        return mu_bar_;
-    }
-
-    const std::vector<Eigen::Vector3d> & particles() const
-    {
-        return particles_;
-    }
-
-    const std::vector<double> & weights() const
-    {
-        return weights_;
-    }
-
-    const std::string & resamplingMethod() const
-    {
-        return resampling_method_;
-    }
+    // Getters
+    const Vector6d & state()         const { return mu_; }
+    const Vector6d & predictedState()const { return mu_bar_; }
+    const std::vector<Vector6d> & particles() const { return particles_; }
+    const std::vector<double>   & weights()   const { return weights_; }
+    const std::string & resamplingMethod()    const { return resampling_method_; }
 
 private:
     static double correctAngle(double angle)
@@ -238,160 +218,121 @@ private:
         return std::atan2(std::sin(angle), std::cos(angle));
     }
 
-    // Compute mean pose of all particles
-    Eigen::Vector3d computeMean() const
+    // Weighted mean of all particles
+    // Theta uses circular mean (sin/cos averaging)
+    Vector6d computeMean() const
     {
-        Eigen::Vector3d mean = Eigen::Vector3d::Zero();
-
+        Vector6d mean = Vector6d::Zero();
         double sin_sum = 0.0;
         double cos_sum = 0.0;
 
-        for (const auto & particle : particles_) {
-            mean(0) += particle(0);
-            mean(1) += particle(1);
-
-            sin_sum += std::sin(particle(2));
-            cos_sum += std::cos(particle(2));
+        for (const auto & p : particles_) {
+            mean(0) += p(0);
+            mean(1) += p(1);
+            sin_sum += std::sin(p(2));
+            cos_sum += std::cos(p(2));
+            mean(3) += p(3);
+            mean(4) += p(4);
+            mean(5) += p(5);
         }
 
-        mean(0) = mean(0) / static_cast<double>(num_particles_);
-        mean(1) = mean(1) / static_cast<double>(num_particles_);
-        mean(2) = std::atan2(sin_sum, cos_sum);
+        const double n = static_cast<double>(num_particles_);
+        mean(0) /= n;
+        mean(1) /= n;
+        mean(2)  = std::atan2(sin_sum, cos_sum);
+        mean(3) /= n;
+        mean(4) /= n;
+        mean(5) /= n;
 
         return mean;
     }
 
-    // Reset all particle weights to uniform distribution
     void resetWeights()
     {
-        for (auto & weight : weights_) {
-            weight = 1.0 / static_cast<double>(num_particles_);
+        for (auto & w : weights_) {
+            w = 1.0 / static_cast<double>(num_particles_);
         }
     }
 
-    // Multinomial resampling
-    // samples each new particle independently according to the weights
     void resampleMultinomial()
     {
-        std::vector<Eigen::Vector3d> resampled_particles;
-        resampled_particles.reserve(num_particles_);
+        std::vector<Vector6d> resampled;
+        resampled.reserve(num_particles_);
 
-        std::discrete_distribution<int> distribution(
-            weights_.begin(),
-            weights_.end()
-        );
+        std::discrete_distribution<int> dist(weights_.begin(), weights_.end());
 
         for (int i = 0; i < num_particles_; ++i) {
-            int index = distribution(random_generator_);
-            resampled_particles.push_back(particles_[index]);
+            resampled.push_back(particles_[dist(random_generator_)]);
         }
 
-        particles_ = resampled_particles;
+        particles_ = resampled;
         resetWeights();
-
-        // Mean of corrected particles
         mu_ = computeMean();
     }
 
-    // Systematic resampling
-    // Uses one random starting point and then samples at fixed intervals
-    // Usually has lower variance than multinomial resampling
     void resampleSystematic()
     {
-        std::vector<Eigen::Vector3d> resampled_particles;
-        resampled_particles.reserve(num_particles_);
+        std::vector<Vector6d> resampled;
+        resampled.reserve(num_particles_);
 
-        std::uniform_real_distribution<double> distribution(
-            0.0,
-            1.0 / static_cast<double>(num_particles_)
-        );
+        std::uniform_real_distribution<double> dist(
+            0.0, 1.0 / static_cast<double>(num_particles_));
 
-        double start = distribution(random_generator_);
-        double cumulative_weight = weights_[0];
-        int index = 0;
+        double start = dist(random_generator_);
+        double cumul = weights_[0];
+        int idx = 0;
 
         for (int i = 0; i < num_particles_; ++i) {
-            double position =
-                start + static_cast<double>(i) / static_cast<double>(num_particles_);
-
-            while (position > cumulative_weight && index < num_particles_ - 1) {
-                index++;
-                cumulative_weight += weights_[index];
+            double pos = start + static_cast<double>(i) /
+                         static_cast<double>(num_particles_);
+            while (pos > cumul && idx < num_particles_ - 1) {
+                ++idx;
+                cumul += weights_[idx];
             }
-
-            resampled_particles.push_back(particles_[index]);
+            resampled.push_back(particles_[idx]);
         }
 
-        particles_ = resampled_particles;
+        particles_ = resampled;
         resetWeights();
-
-        // Mean of corrected particles
         mu_ = computeMean();
     }
 
-    // Stratified resampling
-    // Divides [0, 1] into N intervals and samples once inside each interval
-    // reduces sampling variance compared to multinomial resampling
     void resampleStratified()
     {
-        std::vector<Eigen::Vector3d> resampled_particles;
-        resampled_particles.reserve(num_particles_);
+        std::vector<Vector6d> resampled;
+        resampled.reserve(num_particles_);
 
-        std::uniform_real_distribution<double> distribution(0.0, 1.0);
-
-        double cumulative_weight = weights_[0];
-        int index = 0;
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        double cumul = weights_[0];
+        int idx = 0;
 
         for (int i = 0; i < num_particles_; ++i) {
-            double random_value = distribution(random_generator_);
-
-            double position =
-                (static_cast<double>(i) + random_value) /
-                static_cast<double>(num_particles_);
-
-            while (position > cumulative_weight && index < num_particles_ - 1) {
-                index++;
-                cumulative_weight += weights_[index];
+            double pos = (static_cast<double>(i) + dist(random_generator_)) /
+                          static_cast<double>(num_particles_);
+            while (pos > cumul && idx < num_particles_ - 1) {
+                ++idx;
+                cumul += weights_[idx];
             }
-
-            resampled_particles.push_back(particles_[index]);
+            resampled.push_back(particles_[idx]);
         }
 
-        particles_ = resampled_particles;
+        particles_ = resampled;
         resetWeights();
-
-        // Mean of corrected particles
         mu_ = computeMean();
     }
 
-    // number of particles
     int num_particles_;
+    double x_min_, x_max_, y_min_, y_max_;
 
-    // allowed initialization range
-    double x_min_;
-    double x_max_;
-    double y_min_;
-    double y_max_;
+    std::vector<Vector6d>  particles_;
+    std::vector<double>    weights_;
+    std::string            resampling_method_{"multinomial"};
 
-    // particles
-    std::vector<Eigen::Vector3d> particles_;
+    Vector6d mu_     = Vector6d::Zero();
+    Vector6d mu_bar_ = Vector6d::Zero();
 
-    // weights
-    std::vector<double> weights_;
-
-    // selected resampling method
-    std::string resampling_method_{"multinomial"};
-
-    // state estimate
-    Eigen::Vector3d mu_ = Eigen::Vector3d::Zero();
-
-    // predicted state estimate
-    Eigen::Vector3d mu_bar_ = Eigen::Vector3d::Zero();
-
-    // noise
-    Eigen::Matrix3d R_;
+    Eigen::Matrix<double, 6, 6> R_;
     Eigen::Matrix3d Q_;
 
-    // random generator
     std::mt19937 random_generator_;
 };

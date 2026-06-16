@@ -47,9 +47,6 @@ public:
 
 private:
   // Waypoints: {x, y, yaw}
-  // Yaw at point 10 and 11 corrected to match direction of travel:
-  //   WP10 (0.56, -0.45): approaching from (0.85, 0.5) -> direction ~atan2(-0.95, -0.29) ~ -1.86 rad
-  //   WP11 (0.25, -0.61): approaching from (0.56,-0.45) -> direction ~atan2(-0.16, -0.31) ~ -2.67 rad
   const std::vector<std::array<double, 3>> waypoints_ = {
     { -2.0,  -0.5,   0.0  },
     { -0.5,  -0.5,   1.4  },
@@ -60,8 +57,8 @@ private:
     {  1.3,   1.6,   0.1  },
     {  1.7,   0.55, -3.14 },
     {  0.85,  0.5,  -1.5  },
-    {  0.56, -0.45, -1.86 },  // corrected: facing direction of travel toward WP11
-    {  0.25, -0.61, -2.67 },  // corrected: facing direction of travel toward WP12
+    {  0.56, -0.45, -1.86 },  
+    {  0.25, -0.61, -2.67 },  
     { -0.5,  -0.65, -1.7  },
     { -0.65, -1.6,  -3.14 },
     { -1.6,  -1.5,   2.2  },

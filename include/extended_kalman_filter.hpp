@@ -3,137 +3,159 @@
 #include <eigen3/Eigen/Dense>
 #include <cmath>
 
+// State: [x, y, theta, vx, vy, theta_dot]
+// Control input: u = [v, omega]  (from /cmd_vel)
+// Measurement:   z = [x, y, theta]  (from /odom, absolute pose)
+//
+// The EKF uses the nonlinear motion function g(u, mu):
+//   x_new        = x + vx * dt            (integration from velocity state)
+//   y_new        = y + vy * dt
+//   theta_new    = theta + theta_dot * dt
+//   vx_new       = v * cos(theta)          (set from cmd_vel with cos/sin)
+//   vy_new       = v * sin(theta)
+//   theta_dot_new = omega
+//
+// The Jacobian G = dg/dx linearizes around the current state mu.
+
+using Vector6d   = Eigen::Matrix<double, 6, 1>;
+using Matrix6d   = Eigen::Matrix<double, 6, 6>;
+using Matrix3x6d = Eigen::Matrix<double, 3, 6>;
+using Matrix6x3d = Eigen::Matrix<double, 6, 3>;
+
 class ExtendedKalmanFilter
 {
 public:
-    // Constructor
     ExtendedKalmanFilter()
     {
-        // beginning state = [x, y, theta]
-        mu_ << 0.0, 0.0, 0.0;
+        // Initial state [x, y, theta, vx, vy, theta_dot]
+        mu_ = Vector6d::Zero();
 
-        // covariance in the beginning
-        Sigma_ = Eigen::Matrix3d::Zero();
-        Sigma_(0, 0) = 0.2;
-        Sigma_(1, 1) = 0.2;
-        Sigma_(2, 2) = 0.1;
+        // Initial covariance
+        Sigma_ = Matrix6d::Zero();
+        Sigma_(0, 0) = 0.5;    // x
+        Sigma_(1, 1) = 0.5;    // y
+        Sigma_(2, 2) = 0.1;    // theta
+        Sigma_(3, 3) = 0.5;    // vx
+        Sigma_(4, 4) = 0.5;    // vy
+        Sigma_(5, 5) = 0.2;    // theta_dot
 
-        // measurement model matrix
-        // z = C * x
-        // here we measure [x, y, theta] directly from odometry
-        C_ = Eigen::Matrix3d::Identity();
+        // Measurement model H (3x6): z = H * x
+        // We measure [x, y, theta] directly from odometry
+        H_ = Matrix3x6d::Zero();
+        H_(0, 0) = 1.0;   // x
+        H_(1, 1) = 1.0;   // y
+        H_(2, 2) = 1.0;   // theta
 
-        // process noise
-        // describes uncertainty in the motion model
-        R_ = Eigen::Matrix3d::Zero();
-        R_(0, 0) = 0.05;
-        R_(1, 1) = 0.05;
-        R_(2, 2) = 0.02;
+        // Process noise R (6x6)
+        R_ = Matrix6d::Zero();
+        R_(0, 0) = 0.1;   // x
+        R_(1, 1) = 0.1;   // y
+        R_(2, 2) = 0.02;   // theta
+        R_(3, 3) = 0.1;    // vx
+        R_(4, 4) = 0.1;   // vy
+        R_(5, 5) = 0.02;   // theta_dot
 
-        // measurement noise
-        // describes uncertainty in the odometry measurement
+        // Measurement noise Q (3x3)
         Q_ = Eigen::Matrix3d::Zero();
-        Q_(0, 0) = 0.01;
-        Q_(1, 1) = 0.01;
-        Q_(2, 2) = 0.02;
+        Q_(0, 0) = 0.1;   // x
+        Q_(1, 1) = 0.1;   // y
+        Q_(2, 2) = 0.02;   // theta
 
-        // Jacobian of the motion model
-        G_ = Eigen::Matrix3d::Identity();
+        // Jacobian G (6x6), initialized to identity
+        G_ = Matrix6d::Identity();
 
-        // Kalman Gain
-        K_ = Eigen::Matrix3d::Zero();
+        // Kalman Gain (6x3)
+        K_ = Matrix6x3d::Zero();
     }
 
-    // Destructor
     ~ExtendedKalmanFilter() = default;
 
-    // set beginning state from outside, e.g. first odometry message
-    void setState(const Eigen::Vector3d & mu)
+    // Set initial state from first odometry measurement
+    void setState(const Eigen::Vector3d & pose)
     {
-        mu_ = mu;
-        mu_(2) = correctAngle(mu_(2));
+        mu_(0) = pose(0);
+        mu_(1) = pose(1);
+        mu_(2) = correctAngle(pose(2));
+        mu_(3) = 0.0;
+        mu_(4) = 0.0;
+        mu_(5) = 0.0;
     }
 
     // Prediction step
-    // u = [v, omega]
-    // dt = time difference between two odometry messages
-    Eigen::Vector3d predict(const Eigen::Vector2d & u, double dt)
+    // Applies nonlinear g(u, mu) and linearizes with Jacobian G
+    Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
-        // current state
         const double theta = mu_(2);
-
-        // control input
-        const double v = u(0);
+        const double v     = u(0);
         const double omega = u(1);
 
-        // predicted state using nonlinear TurtleBot/differential-drive motion model
-        // this corresponds to g(mu, u, dt) in the Python code
-        mu_bar_(0) = mu_(0) + v * std::cos(theta) * dt;
-        mu_bar_(1) = mu_(1) + v * std::sin(theta) * dt;
-        mu_bar_(2) = correctAngle(mu_(2) + omega * dt);
+        // Nonlinear motion function g(u, mu):
+        // Positions integrate from current velocity states (smooth propagation),
+        // velocity states are set from cmd_vel with cos/sin (nonlinear part)
+        mu_bar_(0) = mu_(0) + mu_(3) * dt;           // x  += vx * dt
+        mu_bar_(1) = mu_(1) + mu_(4) * dt;           // y  += vy * dt
+        mu_bar_(2) = correctAngle(mu_(2) + mu_(5) * dt); // theta += theta_dot * dt
+        mu_bar_(3) = v * std::cos(theta);             // vx = v * cos(theta)
+        mu_bar_(4) = v * std::sin(theta);             // vy = v * sin(theta)
+        mu_bar_(5) = omega;                           // theta_dot = omega
 
-        // compute Jacobian of the nonlinear motion model
-        // this corresponds to jacobian_g(mu, u, dt) in the Python code
-        computeJacobianG(u, dt);
+        // Jacobian G = dg/dx evaluated at mu (the linearization point)
+        //
+        // g1 = x + vx*dt         → dg1/dvx = dt,  dg1/dtheta = 0
+        // g2 = y + vy*dt         → dg2/dvy = dt,  dg2/dtheta = 0
+        // g3 = theta+theta_dot*dt→ dg3/dtheta_dot = dt
+        // g4 = v*cos(theta)      → dg4/dtheta = -v*sin(theta)
+        // g5 = v*sin(theta)      → dg5/dtheta =  v*cos(theta)
+        // g6 = omega             → constant, no state dependency
+        G_ = Matrix6d::Zero();
 
-        // predicted covariance
-        // EKF difference compared to simple KF:
-        // use local linearization with Jacobian G
+        // Position rows
+        G_(0, 0) = 1.0;              // dx/dx
+        G_(0, 3) = dt;               // dx/dvx
+        G_(1, 1) = 1.0;              // dy/dy
+        G_(1, 4) = dt;               // dy/dvy
+        G_(2, 2) = 1.0;              // dtheta/dtheta
+        G_(2, 5) = dt;               // dtheta/dtheta_dot
+
+        // Velocity rows — nonlinear terms from cos/sin
+        G_(3, 2) = -v * std::sin(theta);   // dvx/dtheta
+        G_(4, 2) =  v * std::cos(theta);   // dvy/dtheta
+        G_(5, 5) = 1.0;                    // dtheta_dot/dtheta_dot (omega is constant)
+
+        // Predicted covariance: Sigma_bar = G * Sigma * G^T + R
         Sigma_bar_ = G_ * Sigma_ * G_.transpose() + R_;
 
         return mu_bar_;
     }
 
-    // Compute Jacobian of the motion model
-    Eigen::Matrix3d computeJacobianG(const Eigen::Vector2d & u, double dt)
+    // Compute Kalman Gain  K = Sigma_bar * H^T * (H * Sigma_bar * H^T + Q)^-1
+    Matrix6x3d computeKalmanGain()
     {
-        // current orientation
-        const double theta = mu_(2);
-
-        // linear velocity
-        const double v = u(0);
-
-        // Jacobian of:
-        // x'     = x + v * cos(theta) * dt
-        // y'     = y + v * sin(theta) * dt
-        // theta' = theta + omega * dt
-        G_ << 1.0, 0.0, -v * std::sin(theta) * dt,
-              0.0, 1.0,  v * std::cos(theta) * dt,
-              0.0, 0.0,  1.0;
-
-        return G_;
-    }
-
-    Eigen::Matrix3d computeKalmanGain()
-    {
-        // compute Kalman Gain
-        // measurement model is direct odometry pose:
-        // z = [x, y, theta]
-        Eigen::Matrix3d S = C_ * Sigma_bar_ * C_.transpose() + Q_;
-        K_ = Sigma_bar_ * C_.transpose() * S.inverse();
-
+        Eigen::Matrix3d S = H_ * Sigma_bar_ * H_.transpose() + Q_;
+        K_ = Sigma_bar_ * H_.transpose() * S.inverse();
         return K_;
     }
 
     // Correction step
-    Eigen::Vector3d correct(const Eigen::Vector3d & z)
+    // z = [x, y, theta] from /odom
+    Vector6d correct(const Eigen::Vector3d & z)
     {
-        // innovation = difference between measurement and prediction
-        Eigen::Vector3d innovation = z - C_ * mu_bar_;
+        // Innovation
+        Eigen::Vector3d innovation = z - H_ * mu_bar_;
         innovation(2) = correctAngle(innovation(2));
 
-        // corrected state
+        // Corrected state
         mu_ = mu_bar_ + K_ * innovation;
         mu_(2) = correctAngle(mu_(2));
 
-        // corrected covariance
-        Sigma_ = (Eigen::Matrix3d::Identity() - K_ * C_) * Sigma_bar_;
+        // Corrected covariance
+        Sigma_ = (Matrix6d::Identity() - K_ * H_) * Sigma_bar_;
 
         return mu_;
     }
 
-    // predict + correct
-    Eigen::Vector3d update(
+    // Full EKF update: predict → Kalman gain → correct
+    Vector6d update(
         const Eigen::Vector2d & u,
         const Eigen::Vector3d & z,
         double dt)
@@ -141,40 +163,16 @@ public:
         predict(u, dt);
         computeKalmanGain();
         correct(z);
-
         return mu_;
     }
 
-    // getter
-    const Eigen::Vector3d & state() const
-    {
-        return mu_;
-    }
-
-    const Eigen::Vector3d & predictedState() const
-    {
-        return mu_bar_;
-    }
-
-    const Eigen::Matrix3d & covariance() const
-    {
-        return Sigma_;
-    }
-
-    const Eigen::Matrix3d & predictedCovariance() const
-    {
-        return Sigma_bar_;
-    }
-
-    const Eigen::Matrix3d & jacobianG() const
-    {
-        return G_;
-    }
-
-    const Eigen::Matrix3d & kalmanGain() const
-    {
-        return K_;
-    }
+    // Getters
+    const Vector6d   & state()              const { return mu_; }
+    const Vector6d   & predictedState()     const { return mu_bar_; }
+    const Matrix6d   & covariance()         const { return Sigma_; }
+    const Matrix6d   & predictedCovariance()const { return Sigma_bar_; }
+    const Matrix6d   & jacobianG()          const { return G_; }
+    const Matrix6x3d & kalmanGain()         const { return K_; }
 
 private:
     static double correctAngle(double angle)
@@ -182,28 +180,26 @@ private:
         return std::atan2(std::sin(angle), std::cos(angle));
     }
 
-    // state
-    Eigen::Vector3d mu_;
+    // State [x, y, theta, vx, vy, theta_dot]
+    Vector6d mu_;
+    Vector6d mu_bar_ = Vector6d::Zero();
 
-    // predicted state
-    Eigen::Vector3d mu_bar_ = Eigen::Vector3d::Zero();
+    // Covariance (6x6)
+    Matrix6d Sigma_;
+    Matrix6d Sigma_bar_ = Matrix6d::Zero();
 
-    // covariance
-    Eigen::Matrix3d Sigma_;
+    // Measurement model matrix H (3x6)
+    Matrix3x6d H_;
 
-    // predicted covariance
-    Eigen::Matrix3d Sigma_bar_ = Eigen::Matrix3d::Zero();
+    // Jacobian of motion model (6x6)
+    Matrix6d G_;
 
-    // measurement model matrix
-    Eigen::Matrix3d C_;
+    // Process noise (6x6)
+    Matrix6d R_;
 
-    // Jacobian of nonlinear motion model
-    Eigen::Matrix3d G_;
-
-    // noise
-    Eigen::Matrix3d R_;
+    // Measurement noise (3x3)
     Eigen::Matrix3d Q_;
 
-    // Kalman Gain
-    Eigen::Matrix3d K_;
+    // Kalman Gain (6x3)
+    Matrix6x3d K_;
 };
