@@ -9,7 +9,7 @@ SHOW_KF               = True
 SHOW_EKF              = True
 SHOW_PF               = False
 SHOW_AMCL             = True
-SHOW_EKF_PREDICT_ONLY = True
+SHOW_EKF_PREDICT_ONLY = False
 
 # Ellipse alle N Posen zeichnen (0 = keine Ellipsen)
 ELLIPSE_EVERY = 40

@@ -27,12 +27,12 @@ public:
         mu_ = Vector6d::Zero();
 
         Sigma_ = Matrix6d::Zero();
-        Sigma_(0, 0) = 1.0;  
-        Sigma_(1, 1) = 1.0;   
-        Sigma_(2, 2) = 1.0;   
-        Sigma_(3, 3) = 0.5;
-        Sigma_(4, 4) = 0.5;
-        Sigma_(5, 5) = 0.5;
+        Sigma_(0, 0) = 0.05;   
+        Sigma_(1, 1) = 0.05;   
+        Sigma_(2, 2) = 0.02;   
+        Sigma_(3, 3) = 0.05;
+        Sigma_(4, 4) = 0.05;
+        Sigma_(5, 5) = 0.02;
 
         mu_bar_    = Vector6d::Zero();
         Sigma_bar_ = Matrix6d::Zero();
