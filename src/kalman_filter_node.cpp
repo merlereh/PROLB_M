@@ -3,11 +3,12 @@
 #include <cmath>
 
 #include "rclcpp/rclcpp.hpp"
+#include "message_filters/subscriber.h"
+#include "message_filters/sync_policies/approximate_time.h"
+#include "message_filters/synchronizer.h"
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
-#include "geometry_msgs/msg/pose_array.hpp"
-#include "geometry_msgs/msg/pose.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 
@@ -18,9 +19,12 @@
 #include "landmark_scan_helper.hpp"
 #include "kalman_filter.hpp"
 
-// Landmark position in map frame
-static constexpr double LANDMARK_X = 1.1;
-static constexpr double LANDMARK_Y = 1.1;
+static constexpr double LANDMARK_X = 1.8;
+static constexpr double LANDMARK_Y = 0.0;
+
+using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+    nav_msgs::msg::Odometry,
+    sensor_msgs::msg::LaserScan>;
 
 class KalmanFilterNode : public rclcpp::Node
 {
@@ -28,8 +32,6 @@ public:
   KalmanFilterNode()
   : Node("kf_node")
   {
-    // /initialpose subscriber — initializes filter in map frame
-    // exactly like clicking "2D Pose Estimate" in RViz
     initialpose_subscription_ =
       this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/initialpose", 10,
@@ -42,16 +44,14 @@ public:
           pose << x, y, theta;
           filter_.setState(pose);
 
-          // Reset odom reference to current odom values
           odom_initialized_ = false;
-          initialized_       = true;
+          initialized_      = true;
 
           RCLCPP_INFO(this->get_logger(),
-            "kf_node initialized from /initialpose (map frame): "
-            "x=%.3f, y=%.3f, theta=%.3f", x, y, theta);
+            "KF initialisiert (Map-Frame): x=%.3f, y=%.3f, theta=%.3f",
+            x, y, theta);
         });
 
-    // /cmd_vel subscriber
     cmd_vel_subscription_ =
       this->create_subscription<geometry_msgs::msg::Twist>(
         "/cmd_vel", 10,
@@ -62,119 +62,110 @@ public:
           has_cmd_vel_   = true;
         });
 
-    // /odom subscriber — used only as DELTA measurement, not absolute pose
-    odom_subscription_ =
-      this->create_subscription<nav_msgs::msg::Odometry>(
-        "/odom", 10,
-        [this](nav_msgs::msg::Odometry::UniquePtr msg) {
-          if (!initialized_) { return; }
+    odom_sub_.subscribe(this, "/odom");
+    scan_sub_.subscribe(this, "/scan");
 
-          rclcpp::Time current_time = msg->header.stamp;
-
-          const double x     = msg->pose.pose.position.x;
-          const double y     = msg->pose.pose.position.y;
-          const double theta = getYaw(msg->pose.pose.orientation);
-
-          // First odom after init: store as reference, don't update filter
-          if (!odom_initialized_) {
-            last_odom_x_     = x;
-            last_odom_y_     = y;
-            last_odom_theta_ = theta;
-            last_time_       = current_time;
-            odom_initialized_ = true;
-            return;
-          }
-
-          // Compute odom delta in odom frame
-          const double dx     = x - last_odom_x_;
-          const double dy     = y - last_odom_y_;
-          const double dtheta = correctAngle(theta - last_odom_theta_);
-
-          last_odom_x_     = x;
-          last_odom_y_     = y;
-          last_odom_theta_ = theta;
-
-          // Use predicted state as base, add odom delta rotated into map frame
-          const Vector6d & pred = filter_.predictedState();
-          const double map_theta = pred(2);
-
-          // Rotate delta from odom frame into map frame
-          const double dx_map = dx * std::cos(map_theta) - dy * std::sin(map_theta);
-          const double dy_map = dx * std::sin(map_theta) + dy * std::cos(map_theta);
-
-          // Build absolute measurement in map frame from filter state + delta
-          Eigen::Vector3d z_odom_map;
-          z_odom_map(0) = pred(0) + dx_map;
-          z_odom_map(1) = pred(1) + dy_map;
-          z_odom_map(2) = correctAngle(pred(2) + dtheta);
-
-          double dt = (current_time - last_time_).seconds();
-          last_time_ = current_time;
-
-          if (dt <= 0.0 || dt > 1.0) { return; }
-          if (!has_cmd_vel_) { return; }
-
-          double cmd_dt = std::abs((current_time - last_cmd_time_).seconds());
-          if (cmd_dt > 0.10) { return; }
-
-          Eigen::Vector2d u;
-          u << last_v_, last_omega_;
-
-          filter_.predict(u, dt);
-          Vector6d estimate = filter_.correctOdom(z_odom_map);
-
-          publishPose(estimate, msg->header.stamp, "map");
-        });
-
-    // /scan subscriber — landmark correction in map frame
-    scan_subscription_ =
-      this->create_subscription<sensor_msgs::msg::LaserScan>(
-        "/scan", 10,
-        [this](sensor_msgs::msg::LaserScan::UniquePtr msg) {
-          if (!initialized_ || !odom_initialized_) { return; }
-
-          // Use predicted state (map frame) for landmark search
-          const Vector6d & pred = filter_.predictedState();
-
-          double r_meas, phi_meas;
-          const bool detected = detectLandmark(
-            *msg,
-            pred(0), pred(1), pred(2),
-            LANDMARK_X, LANDMARK_Y,
-            r_meas, phi_meas);
-
-          if (!detected) { return; }
-
-          RCLCPP_INFO(this->get_logger(),
-            "Landmark detected! r=%.3f, phi=%.3f", r_meas, phi_meas);
-
-          Eigen::Vector2d z_lm;
-          z_lm(0) = r_meas;
-          z_lm(1) = phi_meas;
-
-          Eigen::Vector2d landmark;
-          landmark(0) = LANDMARK_X;
-          landmark(1) = LANDMARK_Y;
-
-          Vector6d estimate = filter_.correctLandmark(z_lm, landmark);
-
-          RCLCPP_INFO(this->get_logger(),
-            "After landmark correction: x=%.3f, y=%.3f, theta=%.3f",
-            estimate(0), estimate(1), estimate(2));
-
-          publishPose(estimate, msg->header.stamp, "map");
-        });
+    sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+        SyncPolicy(20), odom_sub_, scan_sub_);
+    sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.1));
+    sync_->registerCallback(
+        std::bind(&KalmanFilterNode::syncCallback, this,
+                  std::placeholders::_1, std::placeholders::_2));
 
     pose_publisher_ =
       this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/kf_pose", 10);
 
     RCLCPP_INFO(this->get_logger(),
-      "kf_node started. Waiting for /initialpose. Landmark at (%.2f, %.2f)",
+      "KF-Node gestartet. Warte auf /initialpose. Landmark bei (%.2f, %.2f)",
       LANDMARK_X, LANDMARK_Y);
   }
 
 private:
+  void syncCallback(
+    const nav_msgs::msg::Odometry::ConstSharedPtr & odom_msg,
+    const sensor_msgs::msg::LaserScan::ConstSharedPtr & scan_msg)
+  {
+    if (!initialized_) { return; }
+
+    if (!has_cmd_vel_) { return; }
+    double cmd_age = std::abs((this->now() - last_cmd_time_).seconds());
+    if (cmd_age > 0.2) { return; }
+
+    rclcpp::Time current_time = odom_msg->header.stamp;
+
+    const double x_odom     = odom_msg->pose.pose.position.x;
+    const double y_odom     = odom_msg->pose.pose.position.y;
+    const double theta_odom = getYaw(odom_msg->pose.pose.orientation);
+
+    if (!odom_initialized_) {
+      const Vector6d & s     = filter_.state();
+      const double x_map     = s(0);
+      const double y_map     = s(1);
+      const double theta_map = s(2);
+
+      offset_theta_ = correctAngle(theta_map - theta_odom);
+      const double cos_o = std::cos(offset_theta_);
+      const double sin_o = std::sin(offset_theta_);
+      offset_x_ = x_map - (cos_o * x_odom - sin_o * y_odom);
+      offset_y_ = y_map - (sin_o * x_odom + cos_o * y_odom);
+
+      last_time_        = current_time;
+      odom_initialized_ = true;
+
+      RCLCPP_INFO(this->get_logger(),
+        "Odom-Offset: dx=%.3f, dy=%.3f, dtheta=%.3f",
+        offset_x_, offset_y_, offset_theta_);
+      return;
+    }
+
+    const double cos_o = std::cos(offset_theta_);
+    const double sin_o = std::sin(offset_theta_);
+
+    Eigen::Vector3d z_odom_map;
+    z_odom_map(0) = cos_o * x_odom - sin_o * y_odom + offset_x_;
+    z_odom_map(1) = sin_o * x_odom + cos_o * y_odom + offset_y_;
+    z_odom_map(2) = correctAngle(theta_odom + offset_theta_);
+
+    double dt = (current_time - last_time_).seconds();
+    last_time_ = current_time;
+
+    if (dt <= 0.0 || dt > 1.0) { return; }
+
+    Eigen::Vector2d u;
+    u << last_v_, last_omega_;
+
+    filter_.predict(u, dt);
+    filter_.correctOdom(z_odom_map);
+
+    // Landmark correction
+    const Vector6d & state = filter_.state();
+    double r_meas, phi_meas;
+    const bool detected = detectLandmark(
+      *scan_msg,
+      state(0), state(1), state(2),
+      LANDMARK_X, LANDMARK_Y,
+      r_meas, phi_meas);
+
+    if (detected) {
+      Eigen::Vector2d z_lm;
+      z_lm(0) = r_meas;
+      z_lm(1) = phi_meas;
+
+      Eigen::Vector2d landmark;
+      landmark(0) = LANDMARK_X;
+      landmark(1) = LANDMARK_Y;
+
+      filter_.correctLandmark(z_lm, landmark);
+
+      RCLCPP_INFO(this->get_logger(),
+        "Landmark-Korrektur: r=%.3f, phi=%.3f → x=%.3f, y=%.3f",
+        r_meas, phi_meas, filter_.state()(0), filter_.state()(1));
+    }
+
+    publishPose(filter_.state(), odom_msg->header.stamp, "map");
+  }
+
   static double correctAngle(double angle)
   {
     return std::atan2(std::sin(angle), std::cos(angle));
@@ -217,23 +208,25 @@ private:
 
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr                     cmd_vel_subscription_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr                       odom_subscription_;
-  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr                   scan_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr    pose_publisher_;
+
+  message_filters::Subscriber<nav_msgs::msg::Odometry>     odom_sub_;
+  message_filters::Subscriber<sensor_msgs::msg::LaserScan> scan_sub_;
+  std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
   KalmanFilter filter_;
 
-  double last_odom_x_{0.0};
-  double last_odom_y_{0.0};
-  double last_odom_theta_{0.0};
+  double offset_x_{0.0};
+  double offset_y_{0.0};
+  double offset_theta_{0.0};
 
   double last_v_{0.0};
   double last_omega_{0.0};
-
   rclcpp::Time last_cmd_time_;
+  bool has_cmd_vel_{false};
+
   rclcpp::Time last_time_;
 
-  bool has_cmd_vel_{false};
   bool initialized_{false};
   bool odom_initialized_{false};
 };

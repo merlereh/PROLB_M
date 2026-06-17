@@ -24,7 +24,7 @@ def generate_launch_description():
             ])
         ),
         launch_arguments={
-            'headless': 'False',
+            'headless': 'True',
             'rviz': 'False'
         }.items()
         

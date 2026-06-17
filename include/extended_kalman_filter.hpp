@@ -163,10 +163,10 @@ public:
         const Eigen::Vector2d & z_lm,
         const Eigen::Vector2d & landmark)
     {
-        // Use PREDICTED state (mu_bar_), not the odom-corrected state (mu_)
-        const double x     = mu_bar_(0);
-        const double y     = mu_bar_(1);
-        const double theta = mu_bar_(2);
+        // Use current state mu_ (post-odom correction), not mu_bar_
+        const double x     = mu_(0);
+        const double y     = mu_(1);
+        const double theta = mu_(2);
         const double lx    = landmark(0);
         const double ly    = landmark(1);
 
@@ -198,20 +198,24 @@ public:
         H_lm(1, 1) = -dx / q;
         H_lm(1, 2) = -1.0;
 
-        // L.12  Kalman gain — uses Sigma_bar_
-        Eigen::Matrix2d S = H_lm * Sigma_bar_ * H_lm.transpose() + Q_lm_;
-        K_lm_ = Sigma_bar_ * H_lm.transpose() * S.inverse();
+        // Kalman gain — uses Sigma_ (already updated by correctOdom)
+        // We use Sigma_ here because correctLandmark is called AFTER
+        // correctOdom, so Sigma_ is already the post-odom covariance.
+        // Using Sigma_bar_ here would undo the odom correction and
+        // blow up the covariance.
+        Eigen::Matrix2d S = H_lm * Sigma_ * H_lm.transpose() + Q_lm_;
+        K_lm_ = Sigma_ * H_lm.transpose() * S.inverse();
 
         // Innovation (angle-wrapped to [-pi, pi])
         Eigen::Vector2d innovation = z_lm - z_hat;
         innovation(1) = correctAngle(innovation(1));
 
-        // L.14  mu update — starts from mu_bar_
-        mu_ = mu_bar_ + K_lm_ * innovation;
+        // mu update — starts from current mu_
+        mu_ = mu_ + K_lm_ * innovation;
         mu_(2) = correctAngle(mu_(2));
 
-        // L.15  Sigma update — starts from Sigma_bar_
-        Sigma_ = (Matrix6d::Identity() - K_lm_ * H_lm) * Sigma_bar_;
+        // Sigma update — starts from current Sigma_ (shrinks it further)
+        Sigma_ = (Matrix6d::Identity() - K_lm_ * H_lm) * Sigma_;
 
         return mu_;
     }

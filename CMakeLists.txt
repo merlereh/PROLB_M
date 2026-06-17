@@ -17,6 +17,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(message_filters REQUIRED)
 
 include_directories(include)
 
@@ -33,7 +34,8 @@ target_link_libraries(kf_node Eigen3::Eigen)
 
 add_executable(ekf_node src/extended_kalman_filter_node.cpp)
 ament_target_dependencies(ekf_node
-  rclcpp 
+  rclcpp
+  message_filters 
   geometry_msgs 
   nav_msgs 
   tf2 
