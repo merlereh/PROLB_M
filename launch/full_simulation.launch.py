@@ -15,6 +15,13 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
 
+    # Shared params file — edit config/filter_params.yaml to change noise values
+    params_file = PathJoinSubstitution([
+        FindPackageShare('probl_m'),
+        'config',
+        'filter_params.yaml'
+    ])
+
     nav2_simulation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
@@ -27,7 +34,6 @@ def generate_launch_description():
             'headless': 'True',
             'rviz': 'False'
         }.items()
-        
     )
 
     rviz_node = Node(
@@ -50,7 +56,10 @@ def generate_launch_description():
         executable='kf_node',
         name='kf_node',
         output='screen',
-        parameters=[{'use_sim_time': True}]
+        parameters=[
+            params_file,               # <-- loads filter_params.yaml
+            {'use_sim_time': True}
+        ]
     )
 
     ekf_node = Node(
@@ -58,7 +67,10 @@ def generate_launch_description():
         executable='ekf_node',
         name='ekf_node',
         output='screen',
-        parameters=[{'use_sim_time': True}]
+        parameters=[
+            params_file,               # <-- loads filter_params.yaml
+            {'use_sim_time': True}
+        ]
     )
 
     pf_node = Node(
@@ -67,8 +79,8 @@ def generate_launch_description():
         name='pf_node',
         output='screen',
         parameters=[
-            {'use_sim_time': True},
-            {'resampling_method': 'multinomial'}
+            params_file,               # <-- loads filter_params.yaml (incl. pf_threshold_factor)
+            {'use_sim_time': True}
         ]
     )
 

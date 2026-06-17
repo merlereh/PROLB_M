@@ -50,24 +50,13 @@ public:
 
         // Process noise R (6x6)
         R_ = Matrix6d::Zero();
-        R_(0, 0) = 0.05;
-        R_(1, 1) = 0.05;
-        R_(2, 2) = 0.02;
-        R_(3, 3) = 0.1;
-        R_(4, 4) = 0.05;
-        R_(5, 5) = 0.05;
 
         // Odom measurement noise Q_odom (3x3)
         Q_odom_ = Eigen::Matrix3d::Zero();
-        Q_odom_(0, 0) = 0.1;
-        Q_odom_(1, 1) = 0.1;
-        Q_odom_(2, 2) = 0.05;
 
         // Landmark measurement noise Q_lm (2x2)
         // [r_noise, phi_noise]
         Q_lm_ = Eigen::Matrix2d::Zero();
-        Q_lm_(0, 0) = 0.05;
-        Q_lm_(1, 1) = 0.01;
 
         G_      = Matrix6d::Identity();
         K_odom_ = Matrix6x3d::Zero();
@@ -87,6 +76,27 @@ public:
         // Initialise bar-quantities to avoid stale values
         mu_bar_    = mu_;
         Sigma_bar_ = Sigma_;
+    }
+
+      void setNoiseParams(
+        double r_x,  double r_y,  double r_theta,
+        double r_vx, double r_vy, double r_omega,
+        double q_odom_x, double q_odom_y, double q_odom_theta,
+        double q_lm_r,   double q_lm_phi)
+    {
+        R_(0, 0) = r_x;
+        R_(1, 1) = r_y;
+        R_(2, 2) = r_theta;
+        R_(3, 3) = r_vx;
+        R_(4, 4) = r_vy;
+        R_(5, 5) = r_omega;
+ 
+        Q_odom_(0, 0) = q_odom_x;
+        Q_odom_(1, 1) = q_odom_y;
+        Q_odom_(2, 2) = q_odom_theta;
+ 
+        Q_lm_(0, 0) = q_lm_r;
+        Q_lm_(1, 1) = q_lm_phi;
     }
 
     // -------------------------------------------------------------------------

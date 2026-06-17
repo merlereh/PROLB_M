@@ -1,58 +1,104 @@
 """
 python3 scripts/plot_results.py
 
+Welche Filter anzeigen? Einfach True/False setzen:
 """
 
+SHOW_ODOM = True
+SHOW_KF   = True
+SHOW_EKF  = True
+SHOW_PF   = False
+SHOW_AMCL = True
 
+# Ellipse alle N Posen zeichnen (0 = keine Ellipsen)
+ELLIPSE_EVERY = 40
+N_STD         = 2.0   # 1-sigma, 2-sigma, ...
+
+CSV_FILE = "trajectory_log.csv"
+
+# ---------------------------------------------------------------------------
+
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
+
+
+def cov_ellipse(x, y, cov_xx, cov_yy, cov_xy, n_std=2.0, **kwargs):
+    cov = np.array([[cov_xx, cov_xy],
+                    [cov_xy, cov_yy]])
+    vals, vecs = np.linalg.eigh(cov)
+    vals = np.maximum(vals, 0.0)
+    width  = 2.0 * n_std * np.sqrt(vals[0])
+    height = 2.0 * n_std * np.sqrt(vals[1])
+    angle  = np.degrees(np.arctan2(vecs[1, 1], vecs[0, 1]))
+    return Ellipse(xy=(x, y), width=width, height=height, angle=angle, **kwargs)
 
 
 def main():
-    # CSV file from evaluator_node
-    csv_file = "trajectory_log.csv"
+    df = pd.read_csv(CSV_FILE)
 
-    # Read CSV
-    data = pd.read_csv(csv_file)
+    # Which sources to actually plot — driven by the toggles above
+    active = {
+        "odom": SHOW_ODOM,
+        "kf":   SHOW_KF,
+        "ekf":  SHOW_EKF,
+        "pf":   SHOW_PF,
+        "amcl": SHOW_AMCL,
+    }
 
-    # Show available sources
-    print("Available sources:")
-    print(data["source"].unique())
+    style = {
+        "odom": dict(color="gray",   lw=1.2, ls="--", label="Odometry",   zorder=1),
+        "kf":   dict(color="blue",   lw=1.5, ls="-",  label="KF",         zorder=3),
+        "ekf":  dict(color="green",  lw=1.5, ls="-",  label="EKF",        zorder=3),
+        "pf":   dict(color="orange", lw=1.5, ls="-",  label="PF",         zorder=3),
+        "amcl": dict(color="red",    lw=1.2, ls="-",  label="AMCL (Ref)", zorder=2),
+    }
 
-    # Create figure
-    plt.figure(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.set_title("Filter Trajectories with Uncertainty Ellipses", fontsize=13)
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.set_aspect("equal")
+    ax.grid(True, alpha=0.3)
 
-    sources_to_plot = ["amcl", "kf", "ekf", "pf"]
-
-    for source in sources_to_plot:
-        source_data = data[data["source"] == source]
-        if source_data.empty:
+    for src, s in style.items():
+        if not active[src]:
+            continue
+        if src not in df["source"].unique():
             continue
 
-        plt.plot(
-            source_data["x"],
-            source_data["y"],
-            label=source
-        )
-    # Plot x-y trajectory for each source
-#    for source in data["source"].unique():
-#        source_data = data[data["source"] == source]
+        sub = df[df["source"] == src].reset_index(drop=True)
 
-#        plt.plot(
-#            source_data["x"],
-#            source_data["y"],
-#            label=source
-#        )
+        ax.plot(sub["x"], sub["y"],
+                color=s["color"], lw=s["lw"], ls=s["ls"],
+                label=s["label"], zorder=s["zorder"])
+        ax.plot(sub["x"].iloc[0], sub["y"].iloc[0],
+                "o", color=s["color"], ms=6, zorder=5)
 
-    plt.xlabel("x position [m]")
-    plt.ylabel("y position [m]")
-    plt.title("Trajectory comparison")
-    plt.legend()
-    plt.grid(True)
-    plt.axis("equal")
+        # Ellipses (skip odom, skip if ELLIPSE_EVERY == 0)
+        has_cov = {"cov_xx", "cov_yy", "cov_xy"}.issubset(df.columns)
+        if src != "odom" and ELLIPSE_EVERY > 0 and has_cov:
+            for i in range(0, len(sub), ELLIPSE_EVERY):
+                row = sub.iloc[i]
+                cxx, cyy, cxy = row["cov_xx"], row["cov_yy"], row["cov_xy"]
+                if cxx == 0.0 and cyy == 0.0:
+                    continue
+                ell = cov_ellipse(
+                    row["x"], row["y"], cxx, cyy, cxy,
+                    n_std=N_STD,
+                    linewidth=0.8,
+                    edgecolor=s["color"],
+                    facecolor=s["color"],
+                    alpha=0.15,
+                    zorder=s["zorder"] - 1
+                )
+                ax.add_patch(ell)
 
-    # Save and show plot
-    plt.savefig("trajectory_plot.png", dpi=300)
+    ax.legend(loc="upper right")
+    plt.tight_layout()
+    plt.savefig("trajectories_with_ellipses.png", dpi=150)
+    print("Saved: trajectories_with_ellipses.png")
     plt.show()
 
 

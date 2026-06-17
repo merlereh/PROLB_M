@@ -34,13 +34,52 @@ public:
   ParticleFilterNode()
   : Node("pf_node")
   {
-    this->declare_parameter<std::string>("resampling_method", "multinomial");
-    std::string resampling_method =
-      this->get_parameter("resampling_method").as_string();
-    filter_.setResamplingMethod(resampling_method);
-    RCLCPP_INFO(this->get_logger(),
-      "Using resampling method: %s", resampling_method.c_str());
+    // -------------------------------------------------------------------------
+    // Load noise parameters from filter_params.yaml
+    // -------------------------------------------------------------------------
+    this->declare_parameter("r_x",                0.05);
+    this->declare_parameter("r_y",                0.05);
+    this->declare_parameter("r_theta",            0.02);
+    this->declare_parameter("r_vx",               0.10);
+    this->declare_parameter("r_vy",               0.05);
+    this->declare_parameter("r_omega",            0.05);
+    this->declare_parameter("q_odom_x",           0.10);
+    this->declare_parameter("q_odom_y",           0.10);
+    this->declare_parameter("q_odom_theta",       0.05);
+    this->declare_parameter("q_lm_r",             0.05);
+    this->declare_parameter("q_lm_phi",           0.01);
+    this->declare_parameter("pf_threshold_factor", 0.5);
 
+    filter_.setNoiseParams(
+      this->get_parameter("r_x").as_double(),
+      this->get_parameter("r_y").as_double(),
+      this->get_parameter("r_theta").as_double(),
+      this->get_parameter("r_vx").as_double(),
+      this->get_parameter("r_vy").as_double(),
+      this->get_parameter("r_omega").as_double(),
+      this->get_parameter("q_odom_x").as_double(),
+      this->get_parameter("q_odom_y").as_double(),
+      this->get_parameter("q_odom_theta").as_double(),
+      this->get_parameter("q_lm_r").as_double(),
+      this->get_parameter("q_lm_phi").as_double()
+    );
+
+    filter_.threshold_factor_ =
+      this->get_parameter("pf_threshold_factor").as_double();
+
+    RCLCPP_INFO(this->get_logger(),
+      "PF noise params loaded: R=[%.3f, %.3f, %.3f] Q_odom=[%.3f, %.3f, %.3f] threshold=%.2f",
+      this->get_parameter("r_x").as_double(),
+      this->get_parameter("r_y").as_double(),
+      this->get_parameter("r_theta").as_double(),
+      this->get_parameter("q_odom_x").as_double(),
+      this->get_parameter("q_odom_y").as_double(),
+      this->get_parameter("q_odom_theta").as_double(),
+      filter_.threshold_factor_);
+
+    // -------------------------------------------------------------------------
+    // Subscriptions
+    // -------------------------------------------------------------------------
     initialpose_subscription_ =
       this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/initialpose", 10,
@@ -148,10 +187,9 @@ private:
     Eigen::Vector2d u;
     u << last_v_, last_omega_;
 
-    // Particle Filter: predict + odom weighting + resample
     Vector6d estimate = filter_.update(u, z_odom_map, dt);
 
-    // Landmark update falls erkannt
+    // Landmark update
     const Vector6d & state = filter_.state();
     double r_meas, phi_meas;
     const bool detected = detectLandmark(
@@ -210,6 +248,27 @@ private:
     pose_msg.pose.pose.orientation = tf2::toMsg(q);
 
     for (int i = 0; i < 36; ++i) { pose_msg.pose.covariance[i] = 0.0; }
+
+    // Compute covariance from particle spread
+    // cov_xx = E[(x - mu_x)^2], cov_yy = E[(y - mu_y)^2], cov_xy = E[(x-mu_x)(y-mu_y)]
+    {
+      const auto & particles = filter_.particles();
+      const double mu_x = state(0);
+      const double mu_y = state(1);
+      double cov_xx = 0.0, cov_yy = 0.0, cov_xy = 0.0;
+      for (const auto & p : particles) {
+        const double dx = p(0) - mu_x;
+        const double dy = p(1) - mu_y;
+        cov_xx += dx * dx;
+        cov_yy += dy * dy;
+        cov_xy += dx * dy;
+      }
+      const double n = static_cast<double>(particles.size());
+      pose_msg.pose.covariance[0]  = cov_xx / n;   // cov_xx → index [0]
+      pose_msg.pose.covariance[7]  = cov_yy / n;   // cov_yy → index [7]
+      pose_msg.pose.covariance[1]  = cov_xy / n;   // cov_xy → index [1]
+      pose_msg.pose.covariance[6]  = cov_xy / n;   // symmetric
+    }
 
     pose_publisher_->publish(pose_msg);
 

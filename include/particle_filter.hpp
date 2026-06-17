@@ -2,6 +2,7 @@
 
 #include <eigen3/Eigen/Dense>
 #include <cmath>
+#include <numeric>
 #include <random>
 #include <vector>
 #include <string>
@@ -10,6 +11,20 @@
 // Control input: u = [v, omega]  (from /cmd_vel)
 // Odom measurement:     z_odom = [x, y, theta]
 // Landmark measurement: z_lm   = [r, phi]
+//
+// Resampling strategy: Threshold + Multinomial
+//
+//   Before drawing, every particle whose weight is below
+//       threshold_factor_ * (1.0 / N)
+//   is excluded from the candidate pool.
+//   The remaining "good" particles are then resampled with
+//   standard multinomial drawing (proportional to weight).
+//
+//   threshold_factor_ = 0.0  →  pure multinomial (no filtering)
+//   threshold_factor_ = 0.5  →  particles below 50 % of average are dropped
+//   threshold_factor_ = 1.5  →  only well-above-average particles survive
+//
+//   *** Change only threshold_factor_ to compare the three strategies. ***
 
 using Vector6d = Eigen::Matrix<double, 6, 1>;
 
@@ -47,9 +62,35 @@ public:
 
     ~ParticleFilter() = default;
 
-    void setResamplingMethod(const std::string & method)
+    // =========================================================================
+    //  *** CHANGE THIS VALUE to compare resampling strategies ***
+    //
+    //   0.0  →  pure multinomial  (baseline, no threshold)
+    //   0.5  →  drop below 50 % of average weight
+    //   1.5  →  drop below 150 % of average weight (aggressive)
+    // =========================================================================
+    double threshold_factor_ = 0.5;
+
+    // Set noise parameters from ROS2 params / filter_params.yaml
+    void setNoiseParams(
+        double r_x,  double r_y,  double r_theta,
+        double r_vx, double r_vy, double r_omega,
+        double q_odom_x, double q_odom_y, double q_odom_theta,
+        double q_lm_r,   double q_lm_phi)
     {
-        resampling_method_ = method;
+        R_(0, 0) = r_x;
+        R_(1, 1) = r_y;
+        R_(2, 2) = r_theta;
+        R_(3, 3) = r_vx;
+        R_(4, 4) = r_vy;
+        R_(5, 5) = r_omega;
+
+        Q_odom_(0, 0) = q_odom_x;
+        Q_odom_(1, 1) = q_odom_y;
+        Q_odom_(2, 2) = q_odom_theta;
+
+        Q_lm_(0, 0) = q_lm_r;
+        Q_lm_(1, 1) = q_lm_phi;
     }
 
     void initializeParticles()
@@ -123,6 +164,77 @@ public:
         return mu_bar_;
     }
 
+    // Normal cycle: predict + odom weighting + resample
+    Vector6d update(
+        const Eigen::Vector2d & u,
+        const Eigen::Vector3d & z_odom,
+        double dt)
+    {
+        predict(u, dt);
+        computeWeightsOdom(z_odom);
+        resample();
+        return mu_;
+    }
+
+    // Landmark update: call AFTER update() in the same timestep
+    Vector6d updateLandmark(
+        const Eigen::Vector2d & z_lm,
+        const Eigen::Vector2d & landmark)
+    {
+        computeWeightsLandmark(z_lm, landmark);
+        resample();
+        return mu_;
+    }
+
+    const Vector6d & state()          const { return mu_; }
+    const Vector6d & predictedState() const { return mu_bar_; }
+    const std::vector<Vector6d> & particles() const { return particles_; }
+    const std::vector<double>   & weights()   const { return weights_; }
+
+private:
+    static double correctAngle(double angle)
+    {
+        return std::atan2(std::sin(angle), std::cos(angle));
+    }
+
+    Vector6d computeMean() const
+    {
+        Vector6d mean = Vector6d::Zero();
+        double sin_sum = 0.0;
+        double cos_sum = 0.0;
+
+        for (const auto & p : particles_) {
+            mean(0) += p(0);
+            mean(1) += p(1);
+            sin_sum += std::sin(p(2));
+            cos_sum += std::cos(p(2));
+            mean(3) += p(3);
+            mean(4) += p(4);
+            mean(5) += p(5);
+        }
+
+        const double n = static_cast<double>(num_particles_);
+        mean(0) /= n;
+        mean(1) /= n;
+        mean(2)  = std::atan2(sin_sum, cos_sum);
+        mean(3) /= n;
+        mean(4) /= n;
+        mean(5) /= n;
+
+        return mean;
+    }
+
+    void normalizeWeights(double weight_sum)
+    {
+        if (weight_sum > 0.0) {
+            for (auto & w : weights_) { w /= weight_sum; }
+        } else {
+            for (auto & w : weights_) {
+                w = 1.0 / static_cast<double>(num_particles_);
+            }
+        }
+    }
+
     // Odom weighting
     void computeWeightsOdom(const Eigen::Vector3d & z_odom)
     {
@@ -187,141 +299,69 @@ public:
         normalizeWeights(weight_sum);
     }
 
-    // Normal cycle: predict + odom weighting + resample
-    Vector6d update(
-        const Eigen::Vector2d & u,
-        const Eigen::Vector3d & z_odom,
-        double dt)
-    {
-        predict(u, dt);
-        computeWeightsOdom(z_odom);
-        resample();
-        return mu_;
-    }
-
-    // Landmark update: call AFTER update() in the same timestep
-    Vector6d updateLandmark(
-        const Eigen::Vector2d & z_lm,
-        const Eigen::Vector2d & landmark)
-    {
-        computeWeightsLandmark(z_lm, landmark);
-        resample();
-        return mu_;
-    }
-
-    const Vector6d & state()          const { return mu_; }
-    const Vector6d & predictedState() const { return mu_bar_; }
-    const std::vector<Vector6d> & particles() const { return particles_; }
-    const std::vector<double>   & weights()   const { return weights_; }
-    const std::string & resamplingMethod()    const { return resampling_method_; }
-
-private:
-    static double correctAngle(double angle)
-    {
-        return std::atan2(std::sin(angle), std::cos(angle));
-    }
-
-    Vector6d computeMean() const
-    {
-        Vector6d mean = Vector6d::Zero();
-        double sin_sum = 0.0;
-        double cos_sum = 0.0;
-
-        for (const auto & p : particles_) {
-            mean(0) += p(0);
-            mean(1) += p(1);
-            sin_sum += std::sin(p(2));
-            cos_sum += std::cos(p(2));
-            mean(3) += p(3);
-            mean(4) += p(4);
-            mean(5) += p(5);
-        }
-
-        const double n = static_cast<double>(num_particles_);
-        mean(0) /= n;
-        mean(1) /= n;
-        mean(2)  = std::atan2(sin_sum, cos_sum);
-        mean(3) /= n;
-        mean(4) /= n;
-        mean(5) /= n;
-
-        return mean;
-    }
-
-    void normalizeWeights(double weight_sum)
-    {
-        if (weight_sum > 0.0) {
-            for (auto & w : weights_) { w /= weight_sum; }
-        } else {
-            for (auto & w : weights_) {
-                w = 1.0 / static_cast<double>(num_particles_);
-            }
-        }
-    }
-
-    void resampleMultinomial()
-    {
-        std::vector<Vector6d> resampled;
-        resampled.reserve(num_particles_);
-        std::discrete_distribution<int> dist(weights_.begin(), weights_.end());
-        for (int i = 0; i < num_particles_; ++i) {
-            resampled.push_back(particles_[dist(random_generator_)]);
-        }
-        particles_ = resampled;
-        for (auto & w : weights_) { w = 1.0 / static_cast<double>(num_particles_); }
-        mu_ = computeMean();
-    }
-
-    void resampleSystematic()
-    {
-        std::vector<Vector6d> resampled;
-        resampled.reserve(num_particles_);
-        std::uniform_real_distribution<double> dist(
-            0.0, 1.0 / static_cast<double>(num_particles_));
-        double start = dist(random_generator_);
-        double cumul = weights_[0];
-        int idx = 0;
-        for (int i = 0; i < num_particles_; ++i) {
-            double pos = start + static_cast<double>(i) / static_cast<double>(num_particles_);
-            while (pos > cumul && idx < num_particles_ - 1) { ++idx; cumul += weights_[idx]; }
-            resampled.push_back(particles_[idx]);
-        }
-        particles_ = resampled;
-        for (auto & w : weights_) { w = 1.0 / static_cast<double>(num_particles_); }
-        mu_ = computeMean();
-    }
-
-    void resampleStratified()
-    {
-        std::vector<Vector6d> resampled;
-        resampled.reserve(num_particles_);
-        std::uniform_real_distribution<double> dist(0.0, 1.0);
-        double cumul = weights_[0];
-        int idx = 0;
-        for (int i = 0; i < num_particles_; ++i) {
-            double pos = (static_cast<double>(i) + dist(random_generator_)) /
-                          static_cast<double>(num_particles_);
-            while (pos > cumul && idx < num_particles_ - 1) { ++idx; cumul += weights_[idx]; }
-            resampled.push_back(particles_[idx]);
-        }
-        particles_ = resampled;
-        for (auto & w : weights_) { w = 1.0 / static_cast<double>(num_particles_); }
-        mu_ = computeMean();
-    }
-
+    // =========================================================================
+    // Threshold + Multinomial resampling
+    //
+    // Step 1: Drop all particles whose weight is below the threshold.
+    //         threshold = threshold_factor_ * (1.0 / N)
+    //         If threshold_factor_ = 0.0, no particle is dropped (= pure multinomial).
+    //
+    // Step 2: Draw N particles from the surviving candidates,
+    //         proportional to their weight (multinomial).
+    //
+    // Step 3: Reset all weights to 1/N.
+    // =========================================================================
     void resample()
     {
-        if      (resampling_method_ == "systematic") { resampleSystematic(); }
-        else if (resampling_method_ == "stratified") { resampleStratified(); }
-        else                                          { resampleMultinomial(); }
+        const double avg_weight = 1.0 / static_cast<double>(num_particles_);
+        const double threshold  = threshold_factor_ * avg_weight;
+
+        // Step 1: collect indices of particles that pass the threshold
+        std::vector<int> good_indices;
+        good_indices.reserve(num_particles_);
+        for (int i = 0; i < num_particles_; ++i) {
+            if (weights_[i] >= threshold) {
+                good_indices.push_back(i);
+            }
+        }
+
+        // Safety: if everything got filtered (shouldn't happen but just in case),
+        // fall back to all particles so the filter never crashes.
+        if (good_indices.empty()) {
+            good_indices.resize(num_particles_);
+            std::iota(good_indices.begin(), good_indices.end(), 0);
+        }
+
+        // Step 2: build weight list for only the good particles
+        std::vector<double> good_weights;
+        good_weights.reserve(good_indices.size());
+        for (int idx : good_indices) {
+            good_weights.push_back(weights_[idx]);
+        }
+
+        // Step 3: multinomial draw from the good candidates
+        std::discrete_distribution<int> dist(good_weights.begin(), good_weights.end());
+
+        std::vector<Vector6d> resampled;
+        resampled.reserve(num_particles_);
+        for (int i = 0; i < num_particles_; ++i) {
+            int chosen = good_indices[dist(random_generator_)];
+            resampled.push_back(particles_[chosen]);
+        }
+
+        particles_ = resampled;
+        for (auto & w : weights_) { w = avg_weight; }
+        mu_ = computeMean();
     }
 
+    // =========================================================================
+    // Member variables
+    // =========================================================================
     int    num_particles_;
     double x_min_, x_max_, y_min_, y_max_;
 
     std::vector<Vector6d> particles_;
     std::vector<double>   weights_;
-    std::string           resampling_method_{"multinomial"};
 
     Vector6d mu_     = Vector6d::Zero();
     Vector6d mu_bar_ = Vector6d::Zero();

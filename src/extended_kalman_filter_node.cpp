@@ -33,7 +33,45 @@ public:
   : Node("ekf_node")
   {
     // -------------------------------------------------------------------------
-    // /initialpose
+    // Load noise parameters from filter_params.yaml
+    // -------------------------------------------------------------------------
+    this->declare_parameter("r_x",           0.05);
+    this->declare_parameter("r_y",           0.05);
+    this->declare_parameter("r_theta",       0.02);
+    this->declare_parameter("r_vx",          0.10);
+    this->declare_parameter("r_vy",          0.05);
+    this->declare_parameter("r_omega",       0.05);
+    this->declare_parameter("q_odom_x",      0.10);
+    this->declare_parameter("q_odom_y",      0.10);
+    this->declare_parameter("q_odom_theta",  0.05);
+    this->declare_parameter("q_lm_r",        0.05);
+    this->declare_parameter("q_lm_phi",      0.01);
+
+    filter_.setNoiseParams(
+      this->get_parameter("r_x").as_double(),
+      this->get_parameter("r_y").as_double(),
+      this->get_parameter("r_theta").as_double(),
+      this->get_parameter("r_vx").as_double(),
+      this->get_parameter("r_vy").as_double(),
+      this->get_parameter("r_omega").as_double(),
+      this->get_parameter("q_odom_x").as_double(),
+      this->get_parameter("q_odom_y").as_double(),
+      this->get_parameter("q_odom_theta").as_double(),
+      this->get_parameter("q_lm_r").as_double(),
+      this->get_parameter("q_lm_phi").as_double()
+    );
+
+    RCLCPP_INFO(this->get_logger(),
+      "EKF noise params loaded: R=[%.3f, %.3f, %.3f] Q_odom=[%.3f, %.3f, %.3f]",
+      this->get_parameter("r_x").as_double(),
+      this->get_parameter("r_y").as_double(),
+      this->get_parameter("r_theta").as_double(),
+      this->get_parameter("q_odom_x").as_double(),
+      this->get_parameter("q_odom_y").as_double(),
+      this->get_parameter("q_odom_theta").as_double());
+
+    // -------------------------------------------------------------------------
+    // Subscriptions
     // -------------------------------------------------------------------------
     initialpose_subscription_ =
       this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
@@ -55,11 +93,6 @@ public:
             x, y, theta);
         });
 
-    // -------------------------------------------------------------------------
-    // /cmd_vel — kein Header/Timestamp → separat cachen
-    // Twist hat keinen Header, daher kann es nicht im Synchronizer verwendet
-    // werden. Wir cachen den letzten Wert und prüfen das Alter per Wall-Clock.
-    // -------------------------------------------------------------------------
     cmd_vel_subscription_ =
       this->create_subscription<geometry_msgs::msg::Twist>(
         "/cmd_vel", 10,
@@ -70,12 +103,6 @@ public:
           has_cmd_vel_   = true;
         });
 
-    // -------------------------------------------------------------------------
-    // ApproximateTimeSynchronizer für odom + scan
-    //
-    // Odom und Scan müssen zeitlich zusammenpassen (innerhalb ~100ms).
-    // cmd_vel wird separat gecacht und im Callback auf Aktualität geprüft.
-    // -------------------------------------------------------------------------
     odom_sub_.subscribe(this, "/odom");
     scan_sub_.subscribe(this, "/scan");
 
@@ -84,8 +111,7 @@ public:
     sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.1));
     sync_->registerCallback(
         std::bind(&ExtendedKalmanFilterNode::syncCallback, this,
-                  std::placeholders::_1,
-                  std::placeholders::_2));
+                  std::placeholders::_1, std::placeholders::_2));
 
     pose_publisher_ =
       this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
@@ -97,22 +123,12 @@ public:
   }
 
 private:
-  // -------------------------------------------------------------------------
-  // Haupt-Callback: odom + scan sind zeitlich synchronisiert
-  //
-  // Ablauf:
-  //   1. predict(cmd_vel, dt)           — nur wenn cmd_vel aktuell
-  //   2. correctOdom(z_odom_map)
-  //   3. correctLandmark(z_lm)          — falls Landmark erkannt
-  //   4. publishPose()
-  // -------------------------------------------------------------------------
   void syncCallback(
     const nav_msgs::msg::Odometry::ConstSharedPtr & odom_msg,
     const sensor_msgs::msg::LaserScan::ConstSharedPtr & scan_msg)
   {
     if (!initialized_) { return; }
 
-    // cmd_vel muss aktuell sein (max 200ms alt)
     if (!has_cmd_vel_) { return; }
     double cmd_age = std::abs((this->now() - last_cmd_time_).seconds());
     if (cmd_age > 0.2) { return; }
@@ -123,7 +139,6 @@ private:
     const double y_odom     = odom_msg->pose.pose.position.y;
     const double theta_odom = getYaw(odom_msg->pose.pose.orientation);
 
-    // --- Erster Odom nach Init: Offset berechnen ---
     if (!odom_initialized_) {
       const Vector6d & s     = filter_.state();
       const double x_map     = s(0);
@@ -145,7 +160,6 @@ private:
       return;
     }
 
-    // --- Odom-Pose in Map-Frame transformieren ---
     const double cos_o = std::cos(offset_theta_);
     const double sin_o = std::sin(offset_theta_);
 
@@ -154,21 +168,17 @@ private:
     z_odom_map(1) = sin_o * x_odom + cos_o * y_odom + offset_y_;
     z_odom_map(2) = correctAngle(theta_odom + offset_theta_);
 
-    // --- Zeitdelta ---
     double dt = (current_time - last_time_).seconds();
     last_time_ = current_time;
 
     if (dt <= 0.0 || dt > 1.0) { return; }
 
-    // --- Schritt 1: Prediction mit gecachtem cmd_vel ---
     Eigen::Vector2d u;
     u << last_v_, last_omega_;
-    filter_.predict(u, dt);
 
-    // --- Schritt 2: Odom-Korrektur ---
-    filter_.correctOdom(z_odom_map);
+    Vector6d estimate = filter_.update(u, z_odom_map, dt);
 
-    // --- Schritt 3: Landmark-Korrektur falls erkannt ---
+    // Landmark update
     const Vector6d & state = filter_.state();
     double r_meas, phi_meas;
     const bool detected = detectLandmark(
@@ -186,15 +196,14 @@ private:
       landmark(0) = LANDMARK_X;
       landmark(1) = LANDMARK_Y;
 
-      filter_.correctLandmark(z_lm, landmark);
+      estimate = filter_.correctLandmark(z_lm, landmark);
 
       RCLCPP_INFO(this->get_logger(),
-        "Landmark-Korrektur: r=%.3f, phi=%.3f → x=%.3f, y=%.3f",
-        r_meas, phi_meas, filter_.state()(0), filter_.state()(1));
+        "Landmark-Update: r=%.3f, phi=%.3f → x=%.3f, y=%.3f",
+        r_meas, phi_meas, estimate(0), estimate(1));
     }
 
-    // --- Schritt 4: Pose publizieren ---
-    publishPose(filter_.state(), odom_msg->header.stamp, "map");
+    publishPose(estimate, odom_msg->header.stamp, "map");
   }
 
   static double correctAngle(double angle)
@@ -237,24 +246,20 @@ private:
     pose_publisher_->publish(pose_msg);
   }
 
-  // Subscriptions & Publisher
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr                     cmd_vel_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr    pose_publisher_;
 
-  // Message filter subscribers (odom + scan)
   message_filters::Subscriber<nav_msgs::msg::Odometry>     odom_sub_;
   message_filters::Subscriber<sensor_msgs::msg::LaserScan> scan_sub_;
   std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
   ExtendedKalmanFilter filter_;
 
-  // Map-to-Odom Offset
   double offset_x_{0.0};
   double offset_y_{0.0};
   double offset_theta_{0.0};
 
-  // Gecachtes cmd_vel
   double last_v_{0.0};
   double last_omega_{0.0};
   rclcpp::Time last_cmd_time_;

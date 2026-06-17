@@ -32,6 +32,47 @@ public:
   KalmanFilterNode()
   : Node("kf_node")
   {
+    // -------------------------------------------------------------------------
+    // Load noise parameters from filter_params.yaml
+    // -------------------------------------------------------------------------
+    this->declare_parameter("r_x",           0.05);
+    this->declare_parameter("r_y",           0.05);
+    this->declare_parameter("r_theta",       0.02);
+    this->declare_parameter("r_vx",          0.10);
+    this->declare_parameter("r_vy",          0.05);
+    this->declare_parameter("r_omega",       0.05);
+    this->declare_parameter("q_odom_x",      0.10);
+    this->declare_parameter("q_odom_y",      0.10);
+    this->declare_parameter("q_odom_theta",  0.05);
+    this->declare_parameter("q_lm_r",        0.05);
+    this->declare_parameter("q_lm_phi",      0.01);
+
+    filter_.setNoiseParams(
+      this->get_parameter("r_x").as_double(),
+      this->get_parameter("r_y").as_double(),
+      this->get_parameter("r_theta").as_double(),
+      this->get_parameter("r_vx").as_double(),
+      this->get_parameter("r_vy").as_double(),
+      this->get_parameter("r_omega").as_double(),
+      this->get_parameter("q_odom_x").as_double(),
+      this->get_parameter("q_odom_y").as_double(),
+      this->get_parameter("q_odom_theta").as_double(),
+      this->get_parameter("q_lm_r").as_double(),
+      this->get_parameter("q_lm_phi").as_double()
+    );
+
+    RCLCPP_INFO(this->get_logger(),
+      "KF noise params loaded: R=[%.3f, %.3f, %.3f] Q_odom=[%.3f, %.3f, %.3f]",
+      this->get_parameter("r_x").as_double(),
+      this->get_parameter("r_y").as_double(),
+      this->get_parameter("r_theta").as_double(),
+      this->get_parameter("q_odom_x").as_double(),
+      this->get_parameter("q_odom_y").as_double(),
+      this->get_parameter("q_odom_theta").as_double());
+
+    // -------------------------------------------------------------------------
+    // Subscriptions
+    // -------------------------------------------------------------------------
     initialpose_subscription_ =
       this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/initialpose", 10,
@@ -135,10 +176,9 @@ private:
     Eigen::Vector2d u;
     u << last_v_, last_omega_;
 
-    filter_.predict(u, dt);
-    filter_.correctOdom(z_odom_map);
+    Vector6d estimate = filter_.update(u, z_odom_map, dt);
 
-    // Landmark correction
+    // Landmark update
     const Vector6d & state = filter_.state();
     double r_meas, phi_meas;
     const bool detected = detectLandmark(
@@ -156,14 +196,14 @@ private:
       landmark(0) = LANDMARK_X;
       landmark(1) = LANDMARK_Y;
 
-      filter_.correctLandmark(z_lm, landmark);
+      estimate = filter_.correctLandmark(z_lm, landmark);
 
       RCLCPP_INFO(this->get_logger(),
-        "Landmark-Korrektur: r=%.3f, phi=%.3f → x=%.3f, y=%.3f",
-        r_meas, phi_meas, filter_.state()(0), filter_.state()(1));
+        "Landmark-Update: r=%.3f, phi=%.3f → x=%.3f, y=%.3f",
+        r_meas, phi_meas, estimate(0), estimate(1));
     }
 
-    publishPose(filter_.state(), odom_msg->header.stamp, "map");
+    publishPose(estimate, odom_msg->header.stamp, "map");
   }
 
   static double correctAngle(double angle)
