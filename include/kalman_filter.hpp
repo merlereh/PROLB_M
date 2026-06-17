@@ -5,14 +5,12 @@
 
 // State: [x, y, theta, vx, vy, theta_dot]
 // Control input: u = [v, omega]  (from /cmd_vel)
-// Odom measurement:     z_odom = [x, y, theta]  (absolute pose, 3x1)
-// Landmark measurement: z_lm   = [r, phi]        (range + bearing, 2x1)
+// Odom measurement:     z_odom = [x, y, theta, vx, vy, theta_dot]  (6x1)
+// Landmark measurement: z_lm   = [r, phi]  (2x1)
 //
-// KF treats the motion model as linear (as agreed with Prof).
-// Landmark correction uses the nonlinear h() and linearised H_lm.
-// Crucially: correctLandmark() is called AFTER correctOdom(), so it
-// uses mu_ / Sigma_ (post-odom), NOT mu_bar_ / Sigma_bar_ (predicted).
-// Using Sigma_bar_ would blow up the covariance → giant ellipse bug.
+// Odom now corrects ALL 6 states → vx/vy/theta_dot are also updated.
+// This allows off-diagonal covariance terms to survive the correction
+// step → ellipses become elliptical instead of round.
 
 using Vector6d   = Eigen::Matrix<double, 6, 1>;
 using Matrix6d   = Eigen::Matrix<double, 6, 6>;
@@ -29,40 +27,34 @@ public:
         mu_ = Vector6d::Zero();
 
         Sigma_ = Matrix6d::Zero();
-        Sigma_(0, 0) = 0.8;
-        Sigma_(1, 1) = 0.8;
-        Sigma_(2, 2) = 0.1;
+        Sigma_(0, 0) = 1.0;  
+        Sigma_(1, 1) = 1.0;   
+        Sigma_(2, 2) = 1.0;   
         Sigma_(3, 3) = 0.5;
-        Sigma_(4, 4) = 0.8;
-        Sigma_(5, 5) = 0.2;
+        Sigma_(4, 4) = 0.5;
+        Sigma_(5, 5) = 0.5;
 
         mu_bar_    = Vector6d::Zero();
         Sigma_bar_ = Matrix6d::Zero();
 
-        // Odom measurement model C (3x6): maps state → [x, y, theta]
-        C_ = Matrix3x6d::Zero();
-        C_(0, 0) = 1.0;
-        C_(1, 1) = 1.0;
-        C_(2, 2) = 1.0;
+        // Measurement model C (6x6): identity — all states observed
+        C_ = Matrix6d::Identity();
 
         // Process noise R (6x6)
         R_ = Matrix6d::Zero();
 
-        // Odom measurement noise Q_odom (3x3)
-        Q_odom_ = Eigen::Matrix3d::Zero();
+        // Odom measurement noise Q_odom (6x6)
+        Q_odom_ = Matrix6d::Zero();
 
-        // Landmark measurement noise Q_lm (2x2): [r_noise, phi_noise]
+        // Landmark measurement noise Q_lm (2x2)
         Q_lm_ = Eigen::Matrix2d::Zero();
 
-        K_odom_ = Matrix6x3d::Zero();
+        K_odom_ = Matrix6d::Zero();
         K_lm_   = Matrix6x2d::Zero();
     }
 
     ~KalmanFilter() = default;
 
-    // -------------------------------------------------------------------------
-    // Set noise parameters from ROS2 params / filter_params.yaml
-    // -------------------------------------------------------------------------
     void setNoiseParams(
         double r_x,  double r_y,  double r_theta,
         double r_vx, double r_vy, double r_omega,
@@ -79,14 +71,15 @@ public:
         Q_odom_(0, 0) = q_odom_x;
         Q_odom_(1, 1) = q_odom_y;
         Q_odom_(2, 2) = q_odom_theta;
+        // velocity measurement noise — set slightly higher than position
+        Q_odom_(3, 3) = r_vx * 2.0;
+        Q_odom_(4, 4) = r_vy * 2.0;
+        Q_odom_(5, 5) = r_omega * 2.0;
 
         Q_lm_(0, 0) = q_lm_r;
         Q_lm_(1, 1) = q_lm_phi;
     }
 
-    // -------------------------------------------------------------------------
-    // Set initial state from /initialpose
-    // -------------------------------------------------------------------------
     void setState(const Eigen::Vector3d & pose)
     {
         mu_(0) = pose(0);
@@ -101,8 +94,6 @@ public:
 
     // -------------------------------------------------------------------------
     // Prediction step (linear KF)
-    //   mu_bar    = A * mu + B * u
-    //   Sigma_bar = A * Sigma * A^T + R
     // -------------------------------------------------------------------------
     Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
@@ -128,45 +119,35 @@ public:
     }
 
     // -------------------------------------------------------------------------
-    // Odom correction
+    // Odom correction — now 6D: corrects x, y, theta, vx, vy, theta_dot
     //   K     = Sigma_bar * C^T * (C * Sigma_bar * C^T + Q_odom)^-1
     //   mu    = mu_bar + K * (z_odom - C * mu_bar)
     //   Sigma = (I - K * C) * Sigma_bar
     // -------------------------------------------------------------------------
-    Vector6d correctOdom(const Eigen::Vector3d & z_odom)
+    Vector6d correctOdom(const Vector6d & z_odom)
     {
-        Eigen::Matrix3d S = C_ * Sigma_bar_ * C_.transpose() + Q_odom_;
-        K_odom_ = Sigma_bar_ * C_.transpose() * S.inverse();
+        // C = Identity, so C * Sigma_bar * C^T = Sigma_bar
+        Matrix6d S = Sigma_bar_ + Q_odom_;
+        K_odom_ = Sigma_bar_ * S.inverse();
 
-        Eigen::Vector3d innovation = z_odom - C_ * mu_bar_;
+        Vector6d innovation = z_odom - mu_bar_;
         innovation(2) = correctAngle(innovation(2));
 
         mu_ = mu_bar_ + K_odom_ * innovation;
         mu_(2) = correctAngle(mu_(2));
 
-        Sigma_ = (Matrix6d::Identity() - K_odom_ * C_) * Sigma_bar_;
+        Sigma_ = (Matrix6d::Identity() - K_odom_) * Sigma_bar_;
 
         return mu_;
     }
 
     // -------------------------------------------------------------------------
-    // Landmark correction
-    //
-    // Called AFTER correctOdom() → uses mu_ / Sigma_ (post-odom corrected).
-    // DO NOT use mu_bar_ / Sigma_bar_ here — that would undo the odom
-    // correction and blow up the covariance (giant ellipse bug).
-    //
-    //   z_hat = h(mu_)       — expected measurement from current estimate
-    //   H     = dh/dx|mu_    — linearised measurement Jacobian
-    //   K     = Sigma * H^T * (H * Sigma * H^T + Q_lm)^-1
-    //   mu    = mu  + K * (z - z_hat)
-    //   Sigma = (I - K * H) * Sigma
+    // Landmark correction — uses mu_ / Sigma_ (post-odom)
     // -------------------------------------------------------------------------
     Vector6d correctLandmark(
         const Eigen::Vector2d & z_lm,
         const Eigen::Vector2d & landmark)
     {
-        // Post-odom corrected state — NOT mu_bar_
         const double x     = mu_(0);
         const double y     = mu_(1);
         const double theta = mu_(2);
@@ -184,7 +165,6 @@ public:
         z_hat(0) = r;
         z_hat(1) = correctAngle(std::atan2(dy, dx) - theta);
 
-        // Linearised H at mu_
         Matrix2x6d H_lm = Matrix2x6d::Zero();
         H_lm(0, 0) = -dx / r;
         H_lm(0, 1) = -dy / r;
@@ -192,7 +172,6 @@ public:
         H_lm(1, 1) = -dx / q;
         H_lm(1, 2) = -1.0;
 
-        // Kalman gain from Sigma_ (post-odom), NOT Sigma_bar_
         Eigen::Matrix2d S = H_lm * Sigma_ * H_lm.transpose() + Q_lm_;
         K_lm_ = Sigma_ * H_lm.transpose() * S.inverse();
 
@@ -207,12 +186,10 @@ public:
         return mu_;
     }
 
-    // -------------------------------------------------------------------------
     // Convenience: predict + odom-correct in one call
-    // -------------------------------------------------------------------------
     Vector6d update(
         const Eigen::Vector2d & u,
-        const Eigen::Vector3d & z_odom,
+        const Vector6d & z_odom,
         double dt)
     {
         predict(u, dt);
@@ -220,12 +197,12 @@ public:
         return mu_;
     }
 
-    const Vector6d   & state()               const { return mu_; }
-    const Vector6d   & predictedState()      const { return mu_bar_; }
-    const Matrix6d   & covariance()          const { return Sigma_; }
-    const Matrix6d   & predictedCovariance() const { return Sigma_bar_; }
-    const Matrix6x3d & kalmanGainOdom()      const { return K_odom_; }
-    const Matrix6x2d & kalmanGainLandmark()  const { return K_lm_; }
+    const Vector6d & state()               const { return mu_; }
+    const Vector6d & predictedState()      const { return mu_bar_; }
+    const Matrix6d & covariance()          const { return Sigma_; }
+    const Matrix6d & predictedCovariance() const { return Sigma_bar_; }
+    const Matrix6d & kalmanGainOdom()      const { return K_odom_; }
+    const Matrix6x2d & kalmanGainLandmark() const { return K_lm_; }
 
 private:
     static double correctAngle(double angle)
@@ -239,11 +216,11 @@ private:
     Matrix6d Sigma_;
     Matrix6d Sigma_bar_;
 
-    Matrix3x6d      C_;
+    Matrix6d        C_;
     Matrix6d        R_;
-    Eigen::Matrix3d Q_odom_;
+    Matrix6d        Q_odom_;
     Eigen::Matrix2d Q_lm_;
 
-    Matrix6x3d K_odom_;
+    Matrix6d   K_odom_;
     Matrix6x2d K_lm_;
 };

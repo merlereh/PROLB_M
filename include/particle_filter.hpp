@@ -120,9 +120,9 @@ public:
         particles_.clear();
         weights_.clear();
 
-        std::normal_distribution<double> nx(0.0, 0.2);
-        std::normal_distribution<double> ny(0.0, 0.2);
-        std::normal_distribution<double> ntheta(0.0, 0.1);
+        std::normal_distribution<double> nx(0.0, 1.0);
+        std::normal_distribution<double> ny(0.0, 1.0);
+        std::normal_distribution<double> ntheta(0.0, 0.5);
 
         for (int i = 0; i < num_particles_; ++i) {
             Vector6d p = Vector6d::Zero();

@@ -32,9 +32,6 @@ public:
   KalmanFilterNode()
   : Node("kf_node")
   {
-    // -------------------------------------------------------------------------
-    // Load noise parameters from filter_params.yaml
-    // -------------------------------------------------------------------------
     this->declare_parameter("r_x",           0.05);
     this->declare_parameter("r_y",           0.05);
     this->declare_parameter("r_theta",       0.02);
@@ -46,6 +43,7 @@ public:
     this->declare_parameter("q_odom_theta",  0.05);
     this->declare_parameter("q_lm_r",        0.05);
     this->declare_parameter("q_lm_phi",      0.01);
+    this->declare_parameter("skip_n",        1);
 
     filter_.setNoiseParams(
       this->get_parameter("r_x").as_double(),
@@ -61,18 +59,6 @@ public:
       this->get_parameter("q_lm_phi").as_double()
     );
 
-    RCLCPP_INFO(this->get_logger(),
-      "KF noise params loaded: R=[%.3f, %.3f, %.3f] Q_odom=[%.3f, %.3f, %.3f]",
-      this->get_parameter("r_x").as_double(),
-      this->get_parameter("r_y").as_double(),
-      this->get_parameter("r_theta").as_double(),
-      this->get_parameter("q_odom_x").as_double(),
-      this->get_parameter("q_odom_y").as_double(),
-      this->get_parameter("q_odom_theta").as_double());
-
-    // -------------------------------------------------------------------------
-    // Subscriptions
-    // -------------------------------------------------------------------------
     initialpose_subscription_ =
       this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/initialpose", 10,
@@ -133,11 +119,18 @@ private:
     double cmd_age = std::abs((this->now() - last_cmd_time_).seconds());
     if (cmd_age > 0.2) { return; }
 
+    static int skip_counter = 0;         
+    if (++skip_counter % skip_n_ != 0) { return; }  
+
     rclcpp::Time current_time = odom_msg->header.stamp;
 
     const double x_odom     = odom_msg->pose.pose.position.x;
     const double y_odom     = odom_msg->pose.pose.position.y;
     const double theta_odom = getYaw(odom_msg->pose.pose.orientation);
+
+    // Velocity from odom twist (robot frame) → rotate to world frame
+    const double v_robot = odom_msg->twist.twist.linear.x;
+    const double omega   = odom_msg->twist.twist.angular.z;
 
     if (!odom_initialized_) {
       const Vector6d & s     = filter_.state();
@@ -163,10 +156,23 @@ private:
     const double cos_o = std::cos(offset_theta_);
     const double sin_o = std::sin(offset_theta_);
 
-    Eigen::Vector3d z_odom_map;
-    z_odom_map(0) = cos_o * x_odom - sin_o * y_odom + offset_x_;
-    z_odom_map(1) = sin_o * x_odom + cos_o * y_odom + offset_y_;
-    z_odom_map(2) = correctAngle(theta_odom + offset_theta_);
+    // Position in map frame
+    const double x_map     = cos_o * x_odom - sin_o * y_odom + offset_x_;
+    const double y_map_val = sin_o * x_odom + cos_o * y_odom + offset_y_;
+    const double theta_map = correctAngle(theta_odom + offset_theta_);
+
+    // Velocity in world frame (rotate robot-frame velocity by heading)
+    const double vx_world = v_robot * std::cos(theta_map);
+    const double vy_world = v_robot * std::sin(theta_map);
+
+    // 6D measurement vector
+    Vector6d z_odom_map;
+    z_odom_map(0) = x_map;
+    z_odom_map(1) = y_map_val;
+    z_odom_map(2) = theta_map;
+    z_odom_map(3) = vx_world;
+    z_odom_map(4) = vy_world;
+    z_odom_map(5) = omega;
 
     double dt = (current_time - last_time_).seconds();
     last_time_ = current_time;
@@ -242,8 +248,8 @@ private:
     pose_msg.pose.covariance[0]  = cov(0, 0);  // xx
     pose_msg.pose.covariance[7]  = cov(1, 1);  // yy
     pose_msg.pose.covariance[35] = cov(2, 2);  // theta-theta
-    pose_msg.pose.covariance[1]  = cov(0, 1);  // xy  → dreht die Ellipse
-    pose_msg.pose.covariance[6]  = cov(1, 0);  // yx  (symmetrisch)
+    pose_msg.pose.covariance[1]  = cov(0, 1);  // xy → dreht die Ellipse
+    pose_msg.pose.covariance[6]  = cov(1, 0);  // yx (symmetrisch)
 
     pose_publisher_->publish(pose_msg);
   }
@@ -271,6 +277,7 @@ private:
 
   bool initialized_{false};
   bool odom_initialized_{false};
+  int  skip_n_{1}; 
 };
 
 int main(int argc, char * argv[])

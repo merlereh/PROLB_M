@@ -49,6 +49,7 @@ public:
     this->declare_parameter("q_lm_r",             0.05);
     this->declare_parameter("q_lm_phi",           0.01);
     this->declare_parameter("pf_threshold_factor", 0.5);
+    this->declare_parameter("skip_n",        1);
 
     filter_.setNoiseParams(
       this->get_parameter("r_x").as_double(),
@@ -143,6 +144,9 @@ private:
     if (!has_cmd_vel_) { return; }
     double cmd_age = std::abs((this->now() - last_cmd_time_).seconds());
     if (cmd_age > 0.2) { return; }
+
+    static int skip_counter = 0;         
+    if (++skip_counter % skip_n_ != 0) { return; }
 
     rclcpp::Time current_time = odom_msg->header.stamp;
 
@@ -312,6 +316,7 @@ private:
 
   bool initialized_{false};
   bool odom_initialized_{false};
+  int  skip_n_{1};
 };
 
 int main(int argc, char * argv[])

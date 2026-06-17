@@ -4,11 +4,12 @@ python3 scripts/plot_results.py
 Welche Filter anzeigen? Einfach True/False setzen:
 """
 
-SHOW_ODOM = True
-SHOW_KF   = True
-SHOW_EKF  = True
-SHOW_PF   = True
-SHOW_AMCL = True
+SHOW_ODOM      = False
+SHOW_KF        = False
+SHOW_EKF       = True
+SHOW_PF        = False
+SHOW_AMCL      = False
+SHOW_EKF_PRED  = True   # EKF predicted covariance (Sigma_bar_, pre-correction)
 
 # Ellipse alle N Posen zeichnen (0 = keine Ellipsen)
 ELLIPSE_EVERY = 40
@@ -40,19 +41,21 @@ def main():
 
     # Which sources to actually plot — driven by the toggles above
     active = {
-        "odom": SHOW_ODOM,
-        "kf":   SHOW_KF,
-        "ekf":  SHOW_EKF,
-        "pf":   SHOW_PF,
-        "amcl": SHOW_AMCL,
+        "odom":          SHOW_ODOM,
+        "kf":            SHOW_KF,
+        "ekf":           SHOW_EKF,
+        "pf":            SHOW_PF,
+        "amcl":          SHOW_AMCL,
+        "ekf_predicted": SHOW_EKF_PRED,
     }
 
     style = {
-        "odom": dict(color="gray",   lw=1.2, ls="--", label="Odometry",   zorder=1),
-        "kf":   dict(color="blue",   lw=1.5, ls="-",  label="KF",         zorder=3),
-        "ekf":  dict(color="green",  lw=1.5, ls="-",  label="EKF",        zorder=3),
-        "pf":   dict(color="orange", lw=1.5, ls="-",  label="PF",         zorder=3),
-        "amcl": dict(color="red",    lw=1.2, ls="-",  label="AMCL (Ref)", zorder=2),
+        "odom":          dict(color="gray",    lw=1.2, ls="--", label="Odometry",              zorder=1),
+        "kf":            dict(color="blue",    lw=1.5, ls="-",  label="KF",                    zorder=3),
+        "ekf":           dict(color="green",   lw=1.5, ls="-",  label="EKF",                   zorder=3),
+        "pf":            dict(color="orange",  lw=1.5, ls="-",  label="PF",                    zorder=3),
+        "amcl":          dict(color="red",     lw=1.2, ls="-",  label="AMCL (Ref)",            zorder=2),
+        "ekf_predicted": dict(color="#9b59b6", lw=1.0, ls=":",  label="EKF predicted (Σ̄)",    zorder=2),
     }
 
     fig, ax = plt.subplots(figsize=(10, 8))

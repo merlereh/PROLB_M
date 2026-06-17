@@ -103,6 +103,19 @@ public:
             msg->pose.covariance[1]);
         });
 
+    // ── /ekf_pose_predicted (Sigma_bar_ — pre-correction) ────────────────────
+    ekf_predicted_subscription_ =
+      this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        "/ekf_pose_predicted", 10,
+        [this](geometry_msgs::msg::PoseWithCovarianceStamped::UniquePtr msg) {
+          logPoseInMapFrame(
+            msg->header.stamp, "ekf_predicted",
+            msg->header.frame_id, msg->pose.pose,
+            msg->pose.covariance[0],
+            msg->pose.covariance[7],
+            msg->pose.covariance[1]);
+        });
+
     RCLCPP_INFO(this->get_logger(), "Evaluator node started.");
     RCLCPP_INFO(this->get_logger(),
       "Writing trajectory_log.csv (x, y, theta, cov_xx, cov_yy, cov_xy) in map frame.");
@@ -172,6 +185,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr ekf_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pf_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr amcl_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr ekf_predicted_subscription_;
 };
 
 int main(int argc, char * argv[])
