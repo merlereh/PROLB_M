@@ -21,28 +21,53 @@ include_directories(include)
 
 add_executable(kf_node src/kalman_filter_node.cpp)
 ament_target_dependencies(kf_node
-  rclcpp geometry_msgs nav_msgs sensor_msgs tf2 tf2_geometry_msgs)
+  rclcpp 
+  geometry_msgs 
+  nav_msgs 
+  sensor_msgs 
+  tf2 
+  tf2_geometry_msgs
+  sensor_msgs)
 target_link_libraries(kf_node Eigen3::Eigen)
 
 add_executable(ekf_node src/extended_kalman_filter_node.cpp)
 ament_target_dependencies(ekf_node
-  rclcpp geometry_msgs nav_msgs tf2 tf2_geometry_msgs)
+  rclcpp 
+  geometry_msgs 
+  nav_msgs 
+  tf2 
+  tf2_geometry_msgs
+  sensor_msgs)
 target_link_libraries(ekf_node Eigen3::Eigen)
 
 add_executable(pf_node src/particle_filter_node.cpp)
 ament_target_dependencies(pf_node
-  rclcpp geometry_msgs nav_msgs sensor_msgs tf2 tf2_geometry_msgs)
+  rclcpp 
+  geometry_msgs 
+  nav_msgs 
+  sensor_msgs 
+  tf2 
+  tf2_geometry_msgs
+  sensor_msgs)
 target_link_libraries(pf_node Eigen3::Eigen)
 
 add_executable(evaluator_node src/evaluator_node.cpp)
 ament_target_dependencies(evaluator_node
-  rclcpp geometry_msgs nav_msgs tf2 tf2_ros tf2_geometry_msgs)
+  rclcpp 
+  geometry_msgs 
+  nav_msgs 
+  tf2 
+  tf2_ros 
+  tf2_geometry_msgs)
 target_link_libraries(evaluator_node Eigen3::Eigen)
 
 # Combined initial pose + waypoint node (replaces initial_pose_node + waypoint_node)
 add_executable(initial_pose_node src/initial_pose_node.cpp)
 ament_target_dependencies(initial_pose_node
-  rclcpp rclcpp_action nav2_msgs geometry_msgs)
+  rclcpp 
+  rclcpp_action 
+  nav2_msgs 
+  geometry_msgs)
 
 install(TARGETS
   kf_node

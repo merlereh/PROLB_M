@@ -6,13 +6,21 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/pose.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
+#include "landmark_scan_helper.hpp"
 #include "extended_kalman_filter.hpp"
+
+// Known landmark position in map frame (arena corner)
+static constexpr double LANDMARK_X = 2.35;
+static constexpr double LANDMARK_Y = 0.0;
 
 class ExtendedKalmanFilterNode : public rclcpp::Node
 {
@@ -20,95 +28,110 @@ public:
   ExtendedKalmanFilterNode()
   : Node("ekf_node")
   {
-    // Subscriber for velocity commands (/cmd_vel)
-    // u = [v, omega]
-    auto cmd_vel_callback =
-      [this](geometry_msgs::msg::Twist::UniquePtr msg) -> void {
-        last_v_        = msg->linear.x;
-        last_omega_    = msg->angular.z;
-        last_cmd_time_ = this->now();
-        has_cmd_vel_   = true;
-
-        RCLCPP_DEBUG(this->get_logger(),
-          "cmd_vel: v=%.3f, omega=%.3f", last_v_, last_omega_);
-      };
-
+    // /cmd_vel subscriber
     cmd_vel_subscription_ =
       this->create_subscription<geometry_msgs::msg::Twist>(
-        "/cmd_vel", 10, cmd_vel_callback);
+        "/cmd_vel", 10,
+        [this](geometry_msgs::msg::Twist::UniquePtr msg) {
+          last_v_        = msg->linear.x;
+          last_omega_    = msg->angular.z;
+          last_cmd_time_ = this->now();
+          has_cmd_vel_   = true;
+        });
 
-    // Subscriber for odometry (/odom)
-    // Measurement z = [x, y, theta]  (absolute pose)
-    auto odom_callback =
-      [this](nav_msgs::msg::Odometry::UniquePtr msg) -> void {
-        rclcpp::Time current_time = msg->header.stamp;
-
-        double x     = msg->pose.pose.position.x;
-        double y     = msg->pose.pose.position.y;
-        double theta = getYawFromQuaternion(msg->pose.pose.orientation);
-
-        Eigen::Vector3d measurement;
-        measurement << x, y, theta;
-
-        if (!initialized_) {
-          filter_.setState(measurement);
-          last_time_   = current_time;
-          initialized_ = true;
-
-          RCLCPP_INFO(this->get_logger(),
-            "EKF initialized: x=%.3f, y=%.3f, theta=%.3f", x, y, theta);
-          return;
-        }
-
-        double dt = (current_time - last_time_).seconds();
-        last_time_ = current_time;
-
-        if (dt <= 0.0 || dt > 1.0) {
-          RCLCPP_WARN(this->get_logger(), "Skipping: dt=%.3f", dt);
-          return;
-        }
-
-        if (!has_cmd_vel_) {
-          RCLCPP_WARN(this->get_logger(), "Skipping: no cmd_vel yet.");
-          return;
-        }
-
-        double cmd_odom_dt = std::abs((current_time - last_cmd_time_).seconds());
-        if (cmd_odom_dt > max_time_difference_) {
-          RCLCPP_WARN(this->get_logger(),
-            "Skipping: cmd_vel/odom time diff=%.3f s", cmd_odom_dt);
-          return;
-        }
-
-        Eigen::Vector2d control;
-        control << last_v_, last_omega_;
-
-        Vector6d estimate = filter_.update(control, measurement, dt);
-
-        RCLCPP_DEBUG(this->get_logger(),
-          "EKF estimate: x=%.3f, y=%.3f, theta=%.3f, vx=%.3f, vy=%.3f, dtheta=%.3f",
-          estimate(0), estimate(1), estimate(2),
-          estimate(3), estimate(4), estimate(5));
-
-        publishPose(estimate, msg->header.stamp, msg->header.frame_id);
-      };
-
+    // /odom subscriber — measurement z = [x, y, theta]
     odom_subscription_ =
       this->create_subscription<nav_msgs::msg::Odometry>(
-        "/odom", 10, odom_callback);
+        "/odom", 10,
+        [this](nav_msgs::msg::Odometry::UniquePtr msg) {
+          rclcpp::Time current_time = msg->header.stamp;
+
+          const double x     = msg->pose.pose.position.x;
+          const double y     = msg->pose.pose.position.y;
+          const double theta = getYaw(msg->pose.pose.orientation);
+
+          // Cache current pose for landmark detection
+          robot_x_     = x;
+          robot_y_     = y;
+          robot_theta_ = theta;
+
+          Eigen::Vector3d z_odom;
+          z_odom << x, y, theta;
+
+          if (!initialized_) {
+            filter_.setState(z_odom);
+            last_time_   = current_time;
+            initialized_ = true;
+            RCLCPP_INFO(this->get_logger(),
+              "ekf_node initialized: x=%.3f, y=%.3f, theta=%.3f", x, y, theta);
+            return;
+          }
+
+          double dt = (current_time - last_time_).seconds();
+          last_time_ = current_time;
+
+          if (dt <= 0.0 || dt > 1.0) { return; }
+          if (!has_cmd_vel_) { return; }
+
+          double cmd_dt = std::abs((current_time - last_cmd_time_).seconds());
+          if (cmd_dt > 0.10) { return; }
+
+          Eigen::Vector2d u;
+          u << last_v_, last_omega_;
+
+          Vector6d estimate = filter_.update(u, z_odom, dt);
+
+          publishPose(estimate, msg->header.stamp, msg->header.frame_id);
+        });
+
+    // /scan subscriber — landmark detection integrated here
+    scan_subscription_ =
+      this->create_subscription<sensor_msgs::msg::LaserScan>(
+        "/scan", 10,
+        [this](sensor_msgs::msg::LaserScan::UniquePtr msg) {
+          if (!initialized_) { return; }
+
+          double r_meas, phi_meas;
+          const bool detected = detectLandmark(
+            *msg,
+            robot_x_, robot_y_, robot_theta_,
+            LANDMARK_X, LANDMARK_Y,
+            r_meas, phi_meas);
+
+          if (!detected) { return; }
+
+          RCLCPP_INFO(this->get_logger(),
+            "Landmark detected! r=%.3f, phi=%.3f", r_meas, phi_meas);
+
+          Eigen::Vector2d z_lm;
+          z_lm(0) = r_meas;
+          z_lm(1) = phi_meas;
+
+          Eigen::Vector2d landmark;
+          landmark(0) = LANDMARK_X;
+          landmark(1) = LANDMARK_Y;
+
+          Vector6d estimate = filter_.correctLandmark(z_lm, landmark);
+
+          RCLCPP_INFO(this->get_logger(),
+            "After landmark correction: x=%.3f, y=%.3f, theta=%.3f",
+            estimate(0), estimate(1), estimate(2));
+
+          publishPose(estimate, msg->header.stamp, "odom");
+        });
 
     pose_publisher_ =
       this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/ekf_pose", 10);
 
-    RCLCPP_INFO(this->get_logger(), "Extended Kalman filter node started (6D state).");
-    RCLCPP_INFO(this->get_logger(), "State: [x, y, theta, vx, vy, theta_dot]");
-    RCLCPP_INFO(this->get_logger(), "Subscribing to /cmd_vel and /odom");
-    RCLCPP_INFO(this->get_logger(), "Publishing to /ekf_pose");
+    RCLCPP_INFO(this->get_logger(),
+      "ekf_node started. State: [x, y, theta, vx, vy, theta_dot]");
+    RCLCPP_INFO(this->get_logger(),
+      "Landmark at (%.2f, %.2f)", LANDMARK_X, LANDMARK_Y);
   }
 
 private:
-  double getYawFromQuaternion(const geometry_msgs::msg::Quaternion & q_msg)
+  double getYaw(const geometry_msgs::msg::Quaternion & q_msg)
   {
     tf2::Quaternion q(q_msg.x, q_msg.y, q_msg.z, q_msg.w);
     double roll, pitch, yaw;
@@ -122,7 +145,6 @@ private:
     const std::string & frame_id)
   {
     geometry_msgs::msg::PoseWithCovarianceStamped pose_msg;
-
     pose_msg.header.stamp    = stamp;
     pose_msg.header.frame_id = frame_id.empty() ? "odom" : frame_id;
 
@@ -134,31 +156,33 @@ private:
     q.setRPY(0.0, 0.0, state(2));
     pose_msg.pose.pose.orientation = tf2::toMsg(q);
 
-    for (int i = 0; i < 36; ++i) {
-      pose_msg.pose.covariance[i] = 0.0;
-    }
+    for (int i = 0; i < 36; ++i) { pose_msg.pose.covariance[i] = 0.0; }
 
-    const Matrix6d & cov = filter_.covariance();
-    pose_msg.pose.covariance[0]  = cov(0, 0);   // x
-    pose_msg.pose.covariance[7]  = cov(1, 1);   // y
-    pose_msg.pose.covariance[35] = cov(2, 2);   // yaw
+    const auto & cov = filter_.covariance();
+    pose_msg.pose.covariance[0]  = cov(0, 0);
+    pose_msg.pose.covariance[7]  = cov(1, 1);
+    pose_msg.pose.covariance[35] = cov(2, 2);
 
     pose_publisher_->publish(pose_msg);
+
   }
 
-  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_subscription_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr   odom_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr    cmd_vel_subscription_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr      odom_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr  scan_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_publisher_;
 
   ExtendedKalmanFilter filter_;
+
+  double robot_x_{0.0};
+  double robot_y_{0.0};
+  double robot_theta_{0.0};
 
   double last_v_{0.0};
   double last_omega_{0.0};
 
   rclcpp::Time last_cmd_time_;
   bool has_cmd_vel_{false};
-
-  double max_time_difference_{0.10};
 
   rclcpp::Time last_time_;
   bool initialized_{false};
