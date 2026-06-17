@@ -97,23 +97,31 @@ public:
     // -------------------------------------------------------------------------
     Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
+        const double theta = mu_(2);
         const double v     = u(0);
         const double omega = u(1);
-        const double theta = mu_(2);
 
-        mu_bar_(0) = mu_(0) + mu_(3) * dt;
-        mu_bar_(1) = mu_(1) + mu_(4) * dt;
-        mu_bar_(2) = correctAngle(mu_(2) + mu_(5) * dt);
+        // Mittelwert: absichtlich gleich wie EKF
+        mu_bar_(0) = mu_(0) + v * std::cos(theta) * dt;
+        mu_bar_(1) = mu_(1) + v * std::sin(theta) * dt;
+        mu_bar_(2) = correctAngle(mu_(2) + omega * dt);
+
         mu_bar_(3) = v * std::cos(theta);
         mu_bar_(4) = v * std::sin(theta);
         mu_bar_(5) = omega;
 
-        Matrix6d A = Matrix6d::Identity();
-        A(0, 3) = dt;
-        A(1, 4) = dt;
-        A(2, 5) = dt;
+        // KF: lineares Kovarianzmodell, keine theta-Ableitungen
+        A_ = Matrix6d::Zero();
 
-        Sigma_bar_ = A * Sigma_ * A.transpose() + R_;
+        A_(0, 0) = 1.0;
+        A_(1, 1) = 1.0;
+        A_(2, 2) = 1.0;
+
+        A_(0, 3) = dt;
+        A_(1, 4) = dt;
+        A_(2, 5) = dt;
+
+        Sigma_bar_ = A_ * Sigma_ * A_.transpose() + R_;
 
         return mu_bar_;
     }

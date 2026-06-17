@@ -95,23 +95,24 @@ public:
         const double v     = u(0);
         const double omega = u(1);
 
-        mu_bar_(0) = mu_(0) + mu_(3) * dt;
-        mu_bar_(1) = mu_(1) + mu_(4) * dt;
-        mu_bar_(2) = correctAngle(mu_(2) + mu_(5) * dt);
+        mu_bar_(0) = mu_(0) + v * std::cos(theta) * dt;
+        mu_bar_(1) = mu_(1) + v * std::sin(theta) * dt;
+        mu_bar_(2) = correctAngle(mu_(2) + omega * dt);
         mu_bar_(3) = v * std::cos(theta);
         mu_bar_(4) = v * std::sin(theta);
         mu_bar_(5) = omega;
 
-        // Jacobian G = dg/dx — includes ∂x/∂θ and ∂y/∂θ for ellipse rotation
         G_ = Matrix6d::Zero();
-        G_(0, 0) = 1.0;  G_(0, 3) = dt;
-        G_(1, 1) = 1.0;  G_(1, 4) = dt;
-        G_(2, 2) = 1.0;  G_(2, 5) = dt;
-        G_(0, 2) = -v * std::sin(theta) * dt;  // ∂x/∂θ
-        G_(1, 2) =  v * std::cos(theta) * dt;  // ∂y/∂θ
-        G_(3, 2) = -v * std::sin(theta);        // ∂vx/∂θ
-        G_(4, 2) =  v * std::cos(theta);        // ∂vy/∂θ
-        G_(5, 5) = 1.0;
+
+        G_(0, 0) = 1.0;
+        G_(1, 1) = 1.0;
+        G_(2, 2) = 1.0;
+
+        G_(0, 2) = -v * std::sin(theta) * dt;
+        G_(1, 2) =  v * std::cos(theta) * dt;
+
+        G_(3, 2) = -v * std::sin(theta);
+        G_(4, 2) =  v * std::cos(theta);
 
         Sigma_bar_ = G_ * Sigma_ * G_.transpose() + R_;
 

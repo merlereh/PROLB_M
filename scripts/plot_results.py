@@ -5,11 +5,11 @@ Welche Filter anzeigen? Einfach True/False setzen:
 """
 
 SHOW_ODOM      = False
-SHOW_KF        = False
+SHOW_KF        = True
 SHOW_EKF       = True
 SHOW_PF        = False
-SHOW_AMCL      = False
-SHOW_EKF_PRED  = True   # EKF predicted covariance (Sigma_bar_, pre-correction)
+SHOW_AMCL      = True
+SHOW_EKF_PRED  = False   # EKF predicted covariance (Sigma_bar_, pre-correction)
 
 # Ellipse alle N Posen zeichnen (0 = keine Ellipsen)
 ELLIPSE_EVERY = 40
