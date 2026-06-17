@@ -5,7 +5,6 @@ source install/setup.bash
 cd ~/ros2_ws/src/probl_m
 ros2 launch probl_m full_simulation.launch.py
 """
-
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -16,8 +15,6 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
 
-    # Start Nav2 TurtleBot simulation.
-    # headless:=False avoids a Jazzy shutdown bug with the ROS adapter.
     nav2_simulation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
@@ -27,11 +24,27 @@ def generate_launch_description():
             ])
         ),
         launch_arguments={
-            'headless': 'True'
+            'headless': 'True',
+            'rviz': 'False'
         }.items()
+        
     )
 
-    # Kalman Filter node
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=[
+            '-d',
+            PathJoinSubstitution([
+                FindPackageShare('probl_m'),
+                'config',
+                'config_ekf.rviz'
+            ])
+        ],
+        parameters=[{'use_sim_time': True}]
+    )
+
     kf_node = Node(
         package='probl_m',
         executable='kf_node',
@@ -40,7 +53,6 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
-    # Extended Kalman Filter node
     ekf_node = Node(
         package='probl_m',
         executable='ekf_node',
@@ -49,7 +61,6 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
-    # Particle Filter node
     pf_node = Node(
         package='probl_m',
         executable='pf_node',
@@ -61,7 +72,6 @@ def generate_launch_description():
         ]
     )
 
-    # Evaluator node
     evaluator_node = Node(
         package='probl_m',
         executable='evaluator_node',
@@ -70,9 +80,6 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
-    # Combined initial pose + waypoint node.
-    # Waits for AMCL (/amcl_pose) before sending the initial pose,
-    # then navigates through all waypoints one by one via NavigateToPose.
     initial_pose_node = Node(
         package='probl_m',
         executable='initial_pose_node',
@@ -91,7 +98,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         nav2_simulation,
-
+        rviz_node,
         TimerAction(
             period=5.0,
             actions=[

@@ -10,10 +10,6 @@
 // Control input: u = [v, omega]  (from /cmd_vel)
 // Odom measurement:     z_odom = [x, y, theta]
 // Landmark measurement: z_lm   = [r, phi]
-//
-// Particle weighting uses both odom and landmark measurements.
-// When a landmark measurement arrives, particle weights are updated
-// based on how well each particle predicts the observed [r, phi].
 
 using Vector6d = Eigen::Matrix<double, 6, 1>;
 
@@ -29,7 +25,6 @@ public:
       y_min_(y_min), y_max_(y_max),
       random_generator_(std::random_device{}())
     {
-        // Process noise R (6x6)
         R_ = Eigen::Matrix<double, 6, 6>::Zero();
         R_(0, 0) = 0.05;
         R_(1, 1) = 0.05;
@@ -38,13 +33,11 @@ public:
         R_(4, 4) = 0.05;
         R_(5, 5) = 0.05;
 
-        // Odom measurement noise Q_odom (3x3)
         Q_odom_ = Eigen::Matrix3d::Zero();
         Q_odom_(0, 0) = 0.05;
         Q_odom_(1, 1) = 0.05;
         Q_odom_(2, 2) = 0.03;
 
-        // Landmark measurement noise Q_lm (2x2)
         Q_lm_ = Eigen::Matrix2d::Zero();
         Q_lm_(0, 0) = 0.1;
         Q_lm_(1, 1) = 0.02;
@@ -103,7 +96,7 @@ public:
         mu_bar_ = mu_;
     }
 
-    // Prediction step
+    // Prediction: sample motion model for each particle
     Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
         const double v     = u(0);
@@ -130,7 +123,7 @@ public:
         return mu_bar_;
     }
 
-    // Odom weighting — compare [x, y, theta] part of each particle
+    // Odom weighting
     void computeWeightsOdom(const Eigen::Vector3d & z_odom)
     {
         double weight_sum = 0.0;
@@ -155,9 +148,7 @@ public:
         normalizeWeights(weight_sum);
     }
 
-    // Landmark weighting — compare predicted [r, phi] per particle
-    // against actual LiDAR measurement
-    // landmark = known (lx, ly) in map frame
+    // Landmark weighting
     void computeWeightsLandmark(
         const Eigen::Vector2d & z_lm,
         const Eigen::Vector2d & landmark)
@@ -189,7 +180,6 @@ public:
                     (error(1) * error(1)) / Q_lm_(1, 1)
                 );
 
-            // Multiply into existing weights (combine with odom weight)
             weights_[i] *= std::exp(exponent) + 1e-300;
             weight_sum  += weights_[i];
         }
@@ -197,20 +187,7 @@ public:
         normalizeWeights(weight_sum);
     }
 
-    void resample()
-    {
-        if (resampling_method_ == "multinomial") {
-            resampleMultinomial();
-        } else if (resampling_method_ == "systematic") {
-            resampleSystematic();
-        } else if (resampling_method_ == "stratified") {
-            resampleStratified();
-        } else {
-            resampleMultinomial();
-        }
-    }
-
-    // Normal update: predict + odom weighting + resample
+    // Normal cycle: predict + odom weighting + resample
     Vector6d update(
         const Eigen::Vector2d & u,
         const Eigen::Vector3d & z_odom,
@@ -222,8 +199,7 @@ public:
         return mu_;
     }
 
-    // Landmark update: additional weighting when landmark is detected
-    // Call AFTER update() in the same timestep
+    // Landmark update: call AFTER update() in the same timestep
     Vector6d updateLandmark(
         const Eigen::Vector2d & z_lm,
         const Eigen::Vector2d & landmark)
@@ -333,7 +309,14 @@ private:
         mu_ = computeMean();
     }
 
-    int num_particles_;
+    void resample()
+    {
+        if      (resampling_method_ == "systematic") { resampleSystematic(); }
+        else if (resampling_method_ == "stratified") { resampleStratified(); }
+        else                                          { resampleMultinomial(); }
+    }
+
+    int    num_particles_;
     double x_min_, x_max_, y_min_, y_max_;
 
     std::vector<Vector6d> particles_;

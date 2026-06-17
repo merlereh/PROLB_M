@@ -3,7 +3,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
-#include "nav_msgs/msg/odometry.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "tf2/LinearMath/Quaternion.h"
@@ -12,8 +12,9 @@
 
 #include "landmark_scan_helper.hpp"
 
-static constexpr double LANDMARK_X = 2.35;
-static constexpr double LANDMARK_Y = 0.0;
+// Landmark position in map frame
+static constexpr double LANDMARK_X = 1.1;
+static constexpr double LANDMARK_Y = 1.1;
 
 class LandmarkVisualizerNode : public rclcpp::Node
 {
@@ -24,24 +25,27 @@ public:
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/landmark_markers", 10);
 
-    // Timer to continuously publish the static landmark sphere
+    // Timer to continuously publish the static landmark marker in map frame
     static_timer_ = this->create_wall_timer(
       std::chrono::milliseconds(500),
       [this]() { publishStaticMarker(); });
 
-    odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      "/odom", 10,
-      [this](nav_msgs::msg::Odometry::UniquePtr msg) {
-        robot_x_     = msg->pose.pose.position.x;
-        robot_y_     = msg->pose.pose.position.y;
-        robot_theta_ = getYaw(msg->pose.pose.orientation);
-        has_odom_    = true;
-      });
+    // Subscribe to EKF pose (map frame) for landmark detection
+    // Falls back gracefully if ekf_node is not running
+    pose_sub_ = this->create_subscription<
+      geometry_msgs::msg::PoseWithCovarianceStamped>(
+        "/ekf_pose", 10,
+        [this](geometry_msgs::msg::PoseWithCovarianceStamped::UniquePtr msg) {
+          robot_x_     = msg->pose.pose.position.x;
+          robot_y_     = msg->pose.pose.position.y;
+          robot_theta_ = getYaw(msg->pose.pose.orientation);
+          has_pose_    = true;
+        });
 
     scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
       "/scan", 10,
       [this](sensor_msgs::msg::LaserScan::UniquePtr msg) {
-        if (!has_odom_) { return; }
+        if (!has_pose_) { return; }
 
         double r_meas, phi_meas;
         bool detected = detectLandmark(
@@ -64,8 +68,8 @@ public:
       });
 
     RCLCPP_INFO(this->get_logger(),
-      "Landmark visualizer started. Landmark at (%.2f, %.2f). "
-      "Add MarkerArray '/landmark_markers' in RViz.",
+      "Landmark visualizer started. Landmark at (%.2f, %.2f) in map frame. "
+      "Listening to /ekf_pose for robot position.",
       LANDMARK_X, LANDMARK_Y);
   }
 
@@ -82,7 +86,7 @@ private:
   {
     visualization_msgs::msg::MarkerArray arr;
 
-    // Blue sphere at the known landmark position
+    // Blue sphere fixed at landmark position in map frame
     visualization_msgs::msg::Marker sphere;
     sphere.header.frame_id = "map";
     sphere.header.stamp    = this->now();
@@ -104,7 +108,7 @@ private:
     sphere.lifetime = rclcpp::Duration(0, 0);
     arr.markers.push_back(sphere);
 
-    // Text label above the sphere
+    // Text label
     visualization_msgs::msg::Marker label;
     label.header.frame_id = "map";
     label.header.stamp    = this->now();
@@ -132,13 +136,13 @@ private:
   {
     visualization_msgs::msg::MarkerArray arr;
 
-    // Small indicator sphere that turns green when detected
+    // Green = detected, Red = not detected
     visualization_msgs::msg::Marker ind;
     ind.header.frame_id = "map";
     ind.header.stamp    = stamp;
     ind.ns              = "landmark";
     ind.id              = 2;
-    ind.type            = visualization_msgs::msg::Marker::SPHERE;
+    ind.type            = visualization_msgs::msg::Marker::CYLINDER;
     ind.action          = visualization_msgs::msg::Marker::ADD;
     ind.pose.position.x = LANDMARK_X;
     ind.pose.position.y = LANDMARK_Y;
@@ -146,26 +150,26 @@ private:
     ind.pose.orientation.w = 1.0;
     ind.scale.x = 0.35;
     ind.scale.y = 0.35;
-    ind.scale.z = 0.1;
+    ind.scale.z = 0.05;
     if (detected) {
       ind.color.r = 0.0f; ind.color.g = 1.0f; ind.color.b = 0.0f;
     } else {
       ind.color.r = 1.0f; ind.color.g = 0.0f; ind.color.b = 0.0f;
     }
-    ind.color.a  = 0.6f;
-    ind.lifetime = rclcpp::Duration(0, 600'000'000);  // 0.6 s
+    ind.color.a  = 0.7f;
+    ind.lifetime = rclcpp::Duration(0, 600'000'000);
     arr.markers.push_back(ind);
 
     marker_pub_->publish(arr);
   }
 
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_sub_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::TimerBase::SharedPtr static_timer_;
 
   double robot_x_{0.0}, robot_y_{0.0}, robot_theta_{0.0};
-  bool has_odom_{false};
+  bool has_pose_{false};
   bool last_detected_{false};
 };
 

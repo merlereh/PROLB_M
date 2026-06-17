@@ -10,6 +10,12 @@
 //
 // EKF uses nonlinear g() + Jacobian G for prediction,
 // and nonlinear h() + Jacobian H_lm for landmark correction.
+//
+// Landmark correction strictly follows the Thrun EKF Localization algorithm
+// (Thrun 2006, Table 7.2):
+//   lines 8-12:  delta, q, z_hat, H_i  all from mu_bar_ / Sigma_bar_
+//   line  14:    mu_t    = mu_bar_  + sum_i K_i (z_i - z_hat_i)
+//   line  15:    Sigma_t = (I - sum_i K_i H_i) Sigma_bar_
 
 using Vector6d   = Eigen::Matrix<double, 6, 1>;
 using Matrix6d   = Eigen::Matrix<double, 6, 6>;
@@ -33,7 +39,10 @@ public:
         Sigma_(4, 4) = 0.5;
         Sigma_(5, 5) = 0.2;
 
-        // Odom measurement model H_odom (3x6)
+        mu_bar_    = Vector6d::Zero();
+        Sigma_bar_ = Matrix6d::Zero();
+
+        // Odom measurement model H_odom (3x6): maps state → [x, y, theta]
         H_odom_ = Matrix3x6d::Zero();
         H_odom_(0, 0) = 1.0;
         H_odom_(1, 1) = 1.0;
@@ -55,6 +64,7 @@ public:
         Q_odom_(2, 2) = 0.02;
 
         // Landmark measurement noise Q_lm (2x2)
+        // [r_noise, phi_noise]
         Q_lm_ = Eigen::Matrix2d::Zero();
         Q_lm_(0, 0) = 0.1;
         Q_lm_(1, 1) = 0.02;
@@ -74,15 +84,23 @@ public:
         mu_(3) = 0.0;
         mu_(4) = 0.0;
         mu_(5) = 0.0;
+        // Initialise bar-quantities to avoid stale values
+        mu_bar_    = mu_;
+        Sigma_bar_ = Sigma_;
     }
 
+    // -------------------------------------------------------------------------
     // Prediction step — nonlinear g() + Jacobian G
+    //   mu_bar    = g(u, mu)
+    //   Sigma_bar = G * Sigma * G^T + R
+    // -------------------------------------------------------------------------
     Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
         const double theta = mu_(2);
         const double v     = u(0);
         const double omega = u(1);
 
+        // Nonlinear motion model g()
         mu_bar_(0) = mu_(0) + mu_(3) * dt;
         mu_bar_(1) = mu_(1) + mu_(4) * dt;
         mu_bar_(2) = correctAngle(mu_(2) + mu_(5) * dt);
@@ -90,6 +108,7 @@ public:
         mu_bar_(4) = v * std::sin(theta);
         mu_bar_(5) = omega;
 
+        // Jacobian G = dg/dx evaluated at mu_t-1
         G_ = Matrix6d::Zero();
         G_(0, 0) = 1.0;  G_(0, 3) = dt;
         G_(1, 1) = 1.0;  G_(1, 4) = dt;
@@ -103,7 +122,12 @@ public:
         return mu_bar_;
     }
 
-    // Odom correction
+    // -------------------------------------------------------------------------
+    // Odom correction (standard linear correction on mu_bar_ / Sigma_bar_)
+    //   K     = Sigma_bar * H^T * (H * Sigma_bar * H^T + Q_odom)^-1
+    //   mu    = mu_bar + K * (z_odom - H * mu_bar)
+    //   Sigma = (I - K * H) * Sigma_bar
+    // -------------------------------------------------------------------------
     Vector6d correctOdom(const Eigen::Vector3d & z_odom)
     {
         Eigen::Matrix3d S = H_odom_ * Sigma_bar_ * H_odom_.transpose() + Q_odom_;
@@ -120,54 +144,79 @@ public:
         return mu_;
     }
 
-    // Landmark correction — nonlinear h() + Jacobian H_lm
-    // z_lm = [r, phi] measured by LiDAR
-    // landmark = known (lx, ly) in map frame
+    // -------------------------------------------------------------------------
+    // Landmark correction — Thrun EKF Localization algorithm, lines 8–15
+    //
+    // IMPORTANT: everything is computed from mu_bar_ / Sigma_bar_,
+    // NOT from mu_ / Sigma_. This was the bug in the previous version.
+    //
+    //   delta = (lx - mu_bar_x,  ly - mu_bar_y)              [L.8]
+    //   q     = delta^T * delta                                [L.9]
+    //   z_hat = (sqrt(q),  atan2(dy,dx) - mu_bar_theta)       [L.10]
+    //   H     = 1/q * (sqrt(q)*dx  -sqrt(q)*dy  0  ...)       [L.11]
+    //             (        dy          -dx      -q  ...)
+    //   K     = Sigma_bar * H^T * (H * Sigma_bar * H^T + Q)^-1  [L.12]
+    //   mu    = mu_bar + K * (z - z_hat)                      [L.14]
+    //   Sigma = (I - K*H) * Sigma_bar                         [L.15]
+    // -------------------------------------------------------------------------
     Vector6d correctLandmark(
         const Eigen::Vector2d & z_lm,
         const Eigen::Vector2d & landmark)
     {
-        const double x     = mu_(0);
-        const double y     = mu_(1);
-        const double theta = mu_(2);
+        // Use PREDICTED state (mu_bar_), not the odom-corrected state (mu_)
+        const double x     = mu_bar_(0);
+        const double y     = mu_bar_(1);
+        const double theta = mu_bar_(2);
         const double lx    = landmark(0);
         const double ly    = landmark(1);
 
-        const double dx  = lx - x;
-        const double dy  = ly - y;
-        const double q   = dx * dx + dy * dy;
-        const double r   = std::sqrt(q);
-        const double phi = correctAngle(std::atan2(dy, dx) - theta);
+        // L.8  delta
+        const double dx = lx - x;
+        const double dy = ly - y;
 
+        // L.9  q
+        const double q = dx * dx + dy * dy;
+        const double r = std::sqrt(q);
+
+        // Guard: landmark too close (would cause division by zero)
+        if (r < 1e-6) { return mu_bar_; }
+
+        // L.10  pseudo-measurement z_hat from mu_bar_
         Eigen::Vector2d z_hat;
         z_hat(0) = r;
-        z_hat(1) = phi;
+        z_hat(1) = correctAngle(std::atan2(dy, dx) - theta);
 
-        // Jacobian H_lm (2x6)
-        // dr/dx=-dx/r, dr/dy=-dy/r, dr/dtheta=0
-        // dphi/dx=dy/q, dphi/dy=-dx/q, dphi/dtheta=-1
-        // columns 3,4,5 = 0 (velocities don't affect measurement)
+        // L.11  Jacobian H_lm (2x6) — nonlinear h() linearised at mu_bar_
+        //   dr/dx   = -dx/r,  dr/dy   = -dy/r,  dr/dtheta   = 0
+        //   dphi/dx =  dy/q,  dphi/dy = -dx/q,  dphi/dtheta = -1
+        //   columns 3,4,5 (velocities) do not affect measurement → 0
         Matrix2x6d H_lm = Matrix2x6d::Zero();
         H_lm(0, 0) = -dx / r;
         H_lm(0, 1) = -dy / r;
+        // H_lm(0,2) = 0  (range is independent of heading)
         H_lm(1, 0) =  dy / q;
         H_lm(1, 1) = -dx / q;
         H_lm(1, 2) = -1.0;
 
-        Eigen::Matrix2d S = H_lm * Sigma_ * H_lm.transpose() + Q_lm_;
-        K_lm_ = Sigma_ * H_lm.transpose() * S.inverse();
+        // L.12  Kalman gain — uses Sigma_bar_
+        Eigen::Matrix2d S = H_lm * Sigma_bar_ * H_lm.transpose() + Q_lm_;
+        K_lm_ = Sigma_bar_ * H_lm.transpose() * S.inverse();
 
+        // Innovation (angle-wrapped to [-pi, pi])
         Eigen::Vector2d innovation = z_lm - z_hat;
         innovation(1) = correctAngle(innovation(1));
 
-        mu_ = mu_ + K_lm_ * innovation;
+        // L.14  mu update — starts from mu_bar_
+        mu_ = mu_bar_ + K_lm_ * innovation;
         mu_(2) = correctAngle(mu_(2));
 
-        Sigma_ = (Matrix6d::Identity() - K_lm_ * H_lm) * Sigma_;
+        // L.15  Sigma update — starts from Sigma_bar_
+        Sigma_ = (Matrix6d::Identity() - K_lm_ * H_lm) * Sigma_bar_;
 
         return mu_;
     }
 
+    // Convenience: predict + odom-correct in one call (normal cycle)
     Vector6d update(
         const Eigen::Vector2d & u,
         const Eigen::Vector3d & z_odom,
@@ -193,10 +242,10 @@ private:
     }
 
     Vector6d mu_;
-    Vector6d mu_bar_ = Vector6d::Zero();
+    Vector6d mu_bar_;
 
     Matrix6d Sigma_;
-    Matrix6d Sigma_bar_ = Matrix6d::Zero();
+    Matrix6d Sigma_bar_;
 
     Matrix3x6d      H_odom_;
     Matrix6d        G_;
