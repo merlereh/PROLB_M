@@ -43,6 +43,17 @@ ament_target_dependencies(ekf_node
   sensor_msgs)
 target_link_libraries(ekf_node Eigen3::Eigen)
 
+add_executable(ekf_predict_only_node src/ekf_predict_only_node.cpp)
+ament_target_dependencies(ekf_predict_only_node
+  rclcpp
+  message_filters
+  geometry_msgs
+  nav_msgs
+  tf2
+  tf2_geometry_msgs
+  sensor_msgs)
+target_link_libraries(ekf_predict_only_node Eigen3::Eigen)
+
 add_executable(pf_node src/particle_filter_node.cpp)
 ament_target_dependencies(pf_node
   rclcpp 
@@ -84,6 +95,7 @@ ament_target_dependencies(landmark_visualizer_node
 install(TARGETS
   kf_node
   ekf_node
+  ekf_predict_only_node
   pf_node
   evaluator_node
   initial_pose_node

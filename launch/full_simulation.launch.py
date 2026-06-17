@@ -108,6 +108,17 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
+    ekf_predict_only_node = Node(
+        package='probl_m',
+        executable='ekf_predict_only_node',
+        name='ekf_predict_only_node',
+        output='screen',
+        parameters=[
+            params_file,
+            {'use_sim_time': True}
+        ]
+    )
+
     return LaunchDescription([
         nav2_simulation,
         rviz_node,
@@ -118,6 +129,7 @@ def generate_launch_description():
                 ekf_node,
                 pf_node,
                 evaluator_node,
+                ekf_predict_only_node,
                 initial_pose_node,
                 landmark_visualizer_node,
             ]

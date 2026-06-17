@@ -4,12 +4,12 @@ python3 scripts/plot_results.py
 Welche Filter anzeigen? Einfach True/False setzen:
 """
 
-SHOW_ODOM      = False
-SHOW_KF        = True
-SHOW_EKF       = True
-SHOW_PF        = False
-SHOW_AMCL      = True
-SHOW_EKF_PRED  = False   # EKF predicted covariance (Sigma_bar_, pre-correction)
+SHOW_ODOM             = False
+SHOW_KF               = True
+SHOW_EKF              = True
+SHOW_PF               = False
+SHOW_AMCL             = True
+SHOW_EKF_PREDICT_ONLY = True
 
 # Ellipse alle N Posen zeichnen (0 = keine Ellipsen)
 ELLIPSE_EVERY = 40
@@ -28,12 +28,26 @@ from matplotlib.patches import Ellipse
 def cov_ellipse(x, y, cov_xx, cov_yy, cov_xy, n_std=2.0, **kwargs):
     cov = np.array([[cov_xx, cov_xy],
                     [cov_xy, cov_yy]])
+
     vals, vecs = np.linalg.eigh(cov)
+
+    order = vals.argsort()[::-1]
+    vals = vals[order]
+    vecs = vecs[:, order]
+
     vals = np.maximum(vals, 0.0)
+
     width  = 2.0 * n_std * np.sqrt(vals[0])
     height = 2.0 * n_std * np.sqrt(vals[1])
-    angle  = np.degrees(np.arctan2(vecs[1, 1], vecs[0, 1]))
-    return Ellipse(xy=(x, y), width=width, height=height, angle=angle, **kwargs)
+    angle  = np.degrees(np.arctan2(vecs[1, 0], vecs[0, 0]))
+
+    return Ellipse(
+        xy=(x, y),
+        width=width,
+        height=height,
+        angle=angle,
+        **kwargs
+    )
 
 
 def main():
@@ -41,21 +55,21 @@ def main():
 
     # Which sources to actually plot — driven by the toggles above
     active = {
-        "odom":          SHOW_ODOM,
-        "kf":            SHOW_KF,
-        "ekf":           SHOW_EKF,
-        "pf":            SHOW_PF,
-        "amcl":          SHOW_AMCL,
-        "ekf_predicted": SHOW_EKF_PRED,
+        "odom":               SHOW_ODOM,
+        "kf":                 SHOW_KF,
+        "ekf":                SHOW_EKF,
+        "pf":                 SHOW_PF,
+        "amcl":               SHOW_AMCL,
+        "ekf_predict_only":   SHOW_EKF_PREDICT_ONLY,
     }
 
     style = {
-        "odom":          dict(color="gray",    lw=1.2, ls="--", label="Odometry",              zorder=1),
-        "kf":            dict(color="blue",    lw=1.5, ls="-",  label="KF",                    zorder=3),
-        "ekf":           dict(color="green",   lw=1.5, ls="-",  label="EKF",                   zorder=3),
-        "pf":            dict(color="orange",  lw=1.5, ls="-",  label="PF",                    zorder=3),
-        "amcl":          dict(color="red",     lw=1.2, ls="-",  label="AMCL (Ref)",            zorder=2),
-        "ekf_predicted": dict(color="#9b59b6", lw=1.0, ls=":",  label="EKF predicted (Σ̄)",    zorder=2),
+        "odom":             dict(color="gray",    lw=1.2, ls="--", label="Odometry",                        zorder=1),
+        "kf":               dict(color="blue",    lw=1.5, ls="-",  label="KF",                              zorder=3),
+        "ekf":              dict(color="green",   lw=1.5, ls="-",  label="EKF",                             zorder=3),
+        "pf":               dict(color="orange",  lw=1.5, ls="-",  label="PF",                              zorder=3),
+        "amcl":             dict(color="red",     lw=1.2, ls="-",  label="AMCL (Ref)",                      zorder=2),
+        "ekf_predict_only": dict(color="#e74c3c", lw=1.0, ls=":",  label="EKF predict-only (kein Correct)", zorder=2),
     }
 
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -76,6 +90,7 @@ def main():
         ax.plot(sub["x"], sub["y"],
                 color=s["color"], lw=s["lw"], ls=s["ls"],
                 label=s["label"], zorder=s["zorder"])
+
         ax.plot(sub["x"].iloc[0], sub["y"].iloc[0],
                 "o", color=s["color"], ms=6, zorder=5)
 

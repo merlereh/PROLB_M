@@ -102,12 +102,6 @@ public:
       this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/ekf_pose", 10);
 
-    // Second publisher: predicted pose with Sigma_bar_ (pre-correction)
-    // Ellipses here are elliptical because G has the off-diagonal θ-coupling.
-    pose_predicted_publisher_ =
-      this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/ekf_pose_predicted", 10);
-
     RCLCPP_INFO(this->get_logger(),
       "EKF-Node gestartet. Warte auf /initialpose. Landmark bei (%.2f, %.2f)",
       LANDMARK_X, LANDMARK_Y);
@@ -130,7 +124,6 @@ private:
     const double y_odom     = odom_msg->pose.pose.position.y;
     const double theta_odom = getYaw(odom_msg->pose.pose.orientation);
 
-    // Velocity from odom twist (robot frame) → rotate to world frame
     const double v_robot = odom_msg->twist.twist.linear.x;
     const double omega   = odom_msg->twist.twist.angular.z;
 
@@ -158,16 +151,13 @@ private:
     const double cos_o = std::cos(offset_theta_);
     const double sin_o = std::sin(offset_theta_);
 
-    // Position in map frame
     const double x_map     = cos_o * x_odom - sin_o * y_odom + offset_x_;
     const double y_map_val = sin_o * x_odom + cos_o * y_odom + offset_y_;
     const double theta_map = correctAngle(theta_odom + offset_theta_);
 
-    // Velocity in world frame (rotate robot-frame velocity by heading)
     const double vx_world = v_robot * std::cos(theta_map);
     const double vy_world = v_robot * std::sin(theta_map);
 
-    // 6D measurement vector
     Vector6d z_odom_map;
     z_odom_map(0) = x_map;
     z_odom_map(1) = y_map_val;
@@ -184,11 +174,7 @@ private:
     Eigen::Vector2d u;
     u << last_v_, last_omega_;
 
-    // Split update() into predict + correct so we can publish
-    // the predicted state (Sigma_bar_) BEFORE correction happens.
-    // This shows the growing/rotating uncertainty from the G Jacobian.
     filter_.predict(u, dt);
-    publishPredictedPose(filter_.predictedState(), odom_msg->header.stamp, "map");
     Vector6d estimate = filter_.correctOdom(z_odom_map);
 
     // Landmark update
@@ -255,48 +241,15 @@ private:
     pose_msg.pose.covariance[0]  = cov(0, 0);  // xx
     pose_msg.pose.covariance[7]  = cov(1, 1);  // yy
     pose_msg.pose.covariance[35] = cov(2, 2);  // theta-theta
-    pose_msg.pose.covariance[1]  = cov(0, 1);  // xy → dreht die Ellipse
-    pose_msg.pose.covariance[6]  = cov(1, 0);  // yx (symmetrisch)
+    pose_msg.pose.covariance[1]  = cov(0, 1);  // xy
+    pose_msg.pose.covariance[6]  = cov(1, 0);  // yx
 
     pose_publisher_->publish(pose_msg);
-  }
-
-  // Publish predicted pose using Sigma_bar_ (before correction).
-  // This covariance grows and rotates with G → shows elliptical uncertainty.
-  void publishPredictedPose(
-    const Vector6d & state,
-    const rclcpp::Time & stamp,
-    const std::string & frame_id)
-  {
-    geometry_msgs::msg::PoseWithCovarianceStamped pose_msg;
-    pose_msg.header.stamp    = stamp;
-    pose_msg.header.frame_id = frame_id;
-
-    pose_msg.pose.pose.position.x = state(0);
-    pose_msg.pose.pose.position.y = state(1);
-    pose_msg.pose.pose.position.z = 0.0;
-
-    tf2::Quaternion q;
-    q.setRPY(0.0, 0.0, state(2));
-    pose_msg.pose.pose.orientation = tf2::toMsg(q);
-
-    for (int i = 0; i < 36; ++i) { pose_msg.pose.covariance[i] = 0.0; }
-
-    // Use Sigma_bar_ — the predicted (pre-correction) covariance
-    const auto & cov = filter_.predictedCovariance();
-    pose_msg.pose.covariance[0]  = cov(0, 0);  // xx
-    pose_msg.pose.covariance[7]  = cov(1, 1);  // yy
-    pose_msg.pose.covariance[35] = cov(2, 2);  // theta-theta
-    pose_msg.pose.covariance[1]  = cov(0, 1);  // xy → dreht die Ellipse
-    pose_msg.pose.covariance[6]  = cov(1, 0);  // yx (symmetrisch)
-
-    pose_predicted_publisher_->publish(pose_msg);
   }
 
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr                     cmd_vel_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr    pose_publisher_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr    pose_predicted_publisher_;
 
   message_filters::Subscriber<nav_msgs::msg::Odometry>     odom_sub_;
   message_filters::Subscriber<sensor_msgs::msg::LaserScan> scan_sub_;

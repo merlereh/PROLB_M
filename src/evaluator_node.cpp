@@ -104,12 +104,12 @@ public:
         });
 
     // ── /ekf_pose_predicted (Sigma_bar_ — pre-correction) ────────────────────
-    ekf_predicted_subscription_ =
+    ekf_predict_only_sub_ =
       this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/ekf_pose_predicted", 10,
+        "/ekf_predict_only_pose", 10,
         [this](geometry_msgs::msg::PoseWithCovarianceStamped::UniquePtr msg) {
           logPoseInMapFrame(
-            msg->header.stamp, "ekf_predicted",
+            msg->header.stamp, "ekf_predict_only",
             msg->header.frame_id, msg->pose.pose,
             msg->pose.covariance[0],
             msg->pose.covariance[7],
@@ -185,8 +185,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr ekf_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pf_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr amcl_subscription_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr ekf_predicted_subscription_;
-};
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr ekf_predict_only_sub_;};
 
 int main(int argc, char * argv[])
 {

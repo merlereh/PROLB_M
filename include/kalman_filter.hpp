@@ -225,6 +225,7 @@ private:
     Matrix6d Sigma_bar_;
 
     Matrix6d        C_;
+    Matrix6d        A_;
     Matrix6d        R_;
     Matrix6d        Q_odom_;
     Eigen::Matrix2d Q_lm_;
