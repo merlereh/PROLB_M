@@ -28,10 +28,10 @@ inline bool detectLandmark(
     double & r_out,
     double & phi_out)
 {
-    // Wider tolerance for a thick cylinder (radius ~0.15 m)
-    constexpr double RANGE_TOLERANCE   = 0.50;   // war 0.40
-constexpr double ANGLE_HALF_WIN    = 0.25;   // war 0.20  
-constexpr int    MIN_CLUSTER_BEAMS = 2;       // war 3
+    constexpr double CYLINDER_RADIUS   = 0.02;  // scale.x/2 aus Visualizer
+    constexpr double RANGE_TOLERANCE   = 0.20;   // etwas großzügiger
+    constexpr double ANGLE_HALF_WIN    = 0.35;   // größeres Suchfenster
+    constexpr int    MIN_CLUSTER_BEAMS = 3;
 
     const int num_beams = static_cast<int>(scan.ranges.size());
     if (num_beams == 0) { return false; }
@@ -75,7 +75,7 @@ constexpr int    MIN_CLUSTER_BEAMS = 2;       // war 3
     double phi_sum = 0.0;
     for (const auto & b : cluster) { phi_sum += b.phi; }
 
-    r_out   = min_r;
+    r_out   = min_r + CYLINDER_RADIUS;  // Oberflaeche -> Mittelpunkt
     phi_out = phi_sum / static_cast<double>(cluster.size());
     return true;
 }

@@ -59,15 +59,15 @@ public:
 
         // Odom measurement noise Q_odom (3x3)
         Q_odom_ = Eigen::Matrix3d::Zero();
-        Q_odom_(0, 0) = 0.01;
-        Q_odom_(1, 1) = 0.01;
-        Q_odom_(2, 2) = 0.02;
+        Q_odom_(0, 0) = 0.1;
+        Q_odom_(1, 1) = 0.1;
+        Q_odom_(2, 2) = 0.05;
 
         // Landmark measurement noise Q_lm (2x2)
         // [r_noise, phi_noise]
         Q_lm_ = Eigen::Matrix2d::Zero();
-        Q_lm_(0, 0) = 0.1;
-        Q_lm_(1, 1) = 0.02;
+        Q_lm_(0, 0) = 0.05;
+        Q_lm_(1, 1) = 0.01;
 
         G_      = Matrix6d::Identity();
         K_odom_ = Matrix6x3d::Zero();

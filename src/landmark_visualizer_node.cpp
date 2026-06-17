@@ -13,8 +13,8 @@
 #include "landmark_scan_helper.hpp"
 
 // Landmark position in map frame
-static constexpr double LANDMARK_X = 1.1;
-static constexpr double LANDMARK_Y = 1.1;
+static constexpr double LANDMARK_X = 1.8;
+static constexpr double LANDMARK_Y = 0.0;
 
 class LandmarkVisualizerNode : public rclcpp::Node
 {
