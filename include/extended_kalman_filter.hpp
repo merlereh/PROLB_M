@@ -119,10 +119,11 @@ public:
         mu_bar_(5) = omega;
 
         // Jacobian G = dg/dx evaluated at mu_t-1
-        G_ = Matrix6d::Zero();
         G_(0, 0) = 1.0;  G_(0, 3) = dt;
         G_(1, 1) = 1.0;  G_(1, 4) = dt;
         G_(2, 2) = 1.0;  G_(2, 5) = dt;
+        G_(0, 2) = -v * std::sin(theta) * dt;   // ← NEU: ∂x/∂θ
+        G_(1, 2) =  v * std::cos(theta) * dt;   // ← NEU: ∂y/∂θ
         G_(3, 2) = -v * std::sin(theta);
         G_(4, 2) =  v * std::cos(theta);
         G_(5, 5) = 1.0;

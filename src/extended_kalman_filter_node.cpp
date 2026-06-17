@@ -239,9 +239,11 @@ private:
     for (int i = 0; i < 36; ++i) { pose_msg.pose.covariance[i] = 0.0; }
 
     const auto & cov = filter_.covariance();
-    pose_msg.pose.covariance[0]  = cov(0, 0);
-    pose_msg.pose.covariance[7]  = cov(1, 1);
-    pose_msg.pose.covariance[35] = cov(2, 2);
+    pose_msg.pose.covariance[0]  = cov(0, 0);  // xx
+    pose_msg.pose.covariance[7]  = cov(1, 1);  // yy
+    pose_msg.pose.covariance[35] = cov(2, 2);  // theta-theta
+    pose_msg.pose.covariance[1]  = cov(0, 1);  // xy  → dreht die Ellipse
+    pose_msg.pose.covariance[6]  = cov(1, 0);  // yx  (symmetrisch)
 
     pose_publisher_->publish(pose_msg);
   }
