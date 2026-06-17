@@ -12,6 +12,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -69,12 +70,22 @@ ament_target_dependencies(initial_pose_node
   nav2_msgs 
   geometry_msgs)
 
+add_executable(landmark_visualizer_node src/landmark_visualizer_node.cpp)
+ament_target_dependencies(landmark_visualizer_node
+  rclcpp
+  nav_msgs
+  sensor_msgs
+  visualization_msgs
+  tf2
+  tf2_geometry_msgs)
+
 install(TARGETS
   kf_node
   ekf_node
   pf_node
   evaluator_node
   initial_pose_node
+  landmark_visualizer_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

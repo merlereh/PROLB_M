@@ -81,6 +81,14 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
+    landmark_visualizer_node = Node(
+        package='probl_m',
+        executable='landmark_visualizer_node',
+        name='landmark_visualizer_node',
+        output='screen',
+        parameters=[{'use_sim_time': True}]
+    )
+
     return LaunchDescription([
         nav2_simulation,
 
@@ -91,7 +99,8 @@ def generate_launch_description():
                 ekf_node,
                 pf_node,
                 evaluator_node,
-                initial_pose_node,  
+                initial_pose_node,
+                landmark_visualizer_node,
             ]
         ),
     ])
