@@ -111,6 +111,13 @@ public:
         G_(0, 2) = -v * std::sin(theta) * dt;
         G_(1, 2) =  v * std::cos(theta) * dt;
 
+        // x hängt von vx ab: ∂x'/∂vx = dt
+        // y hängt von vy ab: ∂y'/∂vy = dt
+        // theta hängt von omega ab: ∂theta'/∂omega = dt
+        G_(0, 3) = dt;
+        G_(1, 4) = dt;
+        G_(2, 5) = dt;
+
         G_(3, 2) = -v * std::sin(theta);
         G_(4, 2) =  v * std::cos(theta);
 
