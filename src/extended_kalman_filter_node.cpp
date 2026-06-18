@@ -124,9 +124,6 @@ private:
     const double y_odom     = odom_msg->pose.pose.position.y;
     const double theta_odom = getYaw(odom_msg->pose.pose.orientation);
 
-    const double v_robot = odom_msg->twist.twist.linear.x;
-    const double omega   = odom_msg->twist.twist.angular.z;
-
     if (!odom_initialized_) {
       const Vector6d & s     = filter_.state();
       const double x_map     = s(0);
@@ -151,20 +148,11 @@ private:
     const double cos_o = std::cos(offset_theta_);
     const double sin_o = std::sin(offset_theta_);
 
-    const double x_map     = cos_o * x_odom - sin_o * y_odom + offset_x_;
-    const double y_map_val = sin_o * x_odom + cos_o * y_odom + offset_y_;
-    const double theta_map = correctAngle(theta_odom + offset_theta_);
-
-    const double vx_world = v_robot * std::cos(theta_map);
-    const double vy_world = v_robot * std::sin(theta_map);
-
-    Vector6d z_odom_map;
-    z_odom_map(0) = x_map;
-    z_odom_map(1) = y_map_val;
-    z_odom_map(2) = theta_map;
-    z_odom_map(3) = vx_world;
-    z_odom_map(4) = vy_world;
-    z_odom_map(5) = omega;
+    // 3D measurement: [x, y, theta] in map frame
+    Eigen::Vector3d z_odom_map;
+    z_odom_map(0) = cos_o * x_odom - sin_o * y_odom + offset_x_;
+    z_odom_map(1) = sin_o * x_odom + cos_o * y_odom + offset_y_;
+    z_odom_map(2) = correctAngle(theta_odom + offset_theta_);
 
     double dt = (current_time - last_time_).seconds();
     last_time_ = current_time;
@@ -175,7 +163,7 @@ private:
     u << last_v_, last_omega_;
 
     filter_.predict(u, dt);
-    Vector6d estimate = filter_.correctOdom(z_odom_map);
+    Vector6d estimate = filter_.correctOdom(z_odom_map);  // 3D: [x, y, theta]
 
     // Landmark update
     const Vector6d & state = filter_.state();

@@ -5,10 +5,8 @@
 
 // State: [x, y, theta, vx, vy, theta_dot]
 // Control input: u = [v, omega]  (from /cmd_vel)
-// Odom measurement:     z_odom = [x, y, theta, vx, vy, theta_dot]  (6x1)
-// Landmark measurement: z_lm   = [r, phi]  (2x1)
-//
-// Odom now corrects ALL 6 states → vx/vy/theta_dot are also updated.
+// Odom measurement:     z_odom = [x, y, theta]  (3x1, from /odom)
+// Landmark measurement: z_lm   = [r, phi]       (2x1, from /scan)
 
 using Vector6d   = Eigen::Matrix<double, 6, 1>;
 using Matrix6d   = Eigen::Matrix<double, 6, 6>;
@@ -25,25 +23,22 @@ public:
         mu_ = Vector6d::Zero();
 
         Sigma_ = Matrix6d::Zero();
-        Sigma_(0, 0) = 0.05;   
-        Sigma_(1, 1) = 0.05;   
+        Sigma_(0, 0) = 0.1;   
+        Sigma_(1, 1) = 0.1;   
         Sigma_(2, 2) = 0.02;   
-        Sigma_(3, 3) = 0.05;
-        Sigma_(4, 4) = 0.05;
+        Sigma_(3, 3) = 0.1;
+        Sigma_(4, 4) = 0.1;
         Sigma_(5, 5) = 0.02;
 
         mu_bar_    = Vector6d::Zero();
         Sigma_bar_ = Matrix6d::Zero();
 
-        // Measurement model H_odom (6x6): identity — all states observed
-        H_odom_ = Matrix6d::Identity();
-
         R_      = Matrix6d::Zero();
-        Q_odom_ = Matrix6d::Zero();
+        Q_odom_ = Eigen::Matrix3d::Zero();
         Q_lm_   = Eigen::Matrix2d::Zero();
 
         G_      = Matrix6d::Identity();
-        K_odom_ = Matrix6d::Zero();
+        K_odom_ = Matrix6x3d::Zero();
         K_lm_   = Matrix6x2d::Zero();
     }
 
@@ -77,10 +72,6 @@ public:
         Q_odom_(0, 0) = q_odom_x;
         Q_odom_(1, 1) = q_odom_y;
         Q_odom_(2, 2) = q_odom_theta;
-        // velocity measurement noise — slightly higher than position
-        Q_odom_(3, 3) = r_vx * 2.0;
-        Q_odom_(4, 4) = r_vy * 2.0;
-        Q_odom_(5, 5) = r_omega * 2.0;
 
         Q_lm_(0, 0) = q_lm_r;
         Q_lm_(1, 1) = q_lm_phi;
@@ -127,21 +118,30 @@ public:
     }
 
     // -------------------------------------------------------------------------
-    // Odom correction — 6D: corrects x, y, theta, vx, vy, theta_dot
+    // Odom correction — 3D: corrects using [x, y, theta] from /odom
+    //   H     = [I3 | 0]  (3x6, selects position/heading states)
+    //   K     = Sigma_bar * H^T * (H * Sigma_bar * H^T + Q_odom)^-1
+    //   mu    = mu_bar + K * (z_odom - H * mu_bar)
+    //   Sigma = (I - K * H) * Sigma_bar
     // -------------------------------------------------------------------------
-    Vector6d correctOdom(const Vector6d & z_odom)
+    Vector6d correctOdom(const Eigen::Vector3d & z_odom)
     {
-        // H_odom = Identity, so H * Sigma_bar * H^T = Sigma_bar
-        Matrix6d S = Sigma_bar_ + Q_odom_;
-        K_odom_ = Sigma_bar_ * S.inverse();
+        // H selects the first 3 states [x, y, theta]
+        Matrix3x6d H = Matrix3x6d::Zero();
+        H(0, 0) = 1.0;
+        H(1, 1) = 1.0;
+        H(2, 2) = 1.0;
 
-        Vector6d innovation = z_odom - mu_bar_;
+        Eigen::Matrix3d S = H * Sigma_bar_ * H.transpose() + Q_odom_;
+        K_odom_ = Sigma_bar_ * H.transpose() * S.inverse();
+
+        Eigen::Vector3d innovation = z_odom - H * mu_bar_;
         innovation(2) = correctAngle(innovation(2));
 
         mu_ = mu_bar_ + K_odom_ * innovation;
         mu_(2) = correctAngle(mu_(2));
 
-        Sigma_ = (Matrix6d::Identity() - K_odom_) * Sigma_bar_;
+        Sigma_ = (Matrix6d::Identity() - K_odom_ * H) * Sigma_bar_;
 
         return mu_;
     }
@@ -194,7 +194,7 @@ public:
     // Convenience: predict + odom-correct in one call
     Vector6d update(
         const Eigen::Vector2d & u,
-        const Vector6d & z_odom,
+        const Eigen::Vector3d & z_odom,
         double dt)
     {
         predict(u, dt);
@@ -207,7 +207,7 @@ public:
     const Matrix6d & covariance()          const { return Sigma_; }
     const Matrix6d & predictedCovariance() const { return Sigma_bar_; }
     const Matrix6d & jacobianG()           const { return G_; }
-    const Matrix6d & kalmanGainOdom()      const { return K_odom_; }
+    const Matrix6x3d & kalmanGainOdom()    const { return K_odom_; }
     const Matrix6x2d & kalmanGainLandmark() const { return K_lm_; }
 
 private:
@@ -222,12 +222,11 @@ private:
     Matrix6d Sigma_;
     Matrix6d Sigma_bar_;
 
-    Matrix6d        H_odom_;
     Matrix6d        G_;
     Matrix6d        R_;
-    Matrix6d        Q_odom_;
+    Eigen::Matrix3d Q_odom_;
     Eigen::Matrix2d Q_lm_;
 
-    Matrix6d   K_odom_;
+    Matrix6x3d K_odom_;
     Matrix6x2d K_lm_;
 };
