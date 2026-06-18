@@ -7,7 +7,7 @@ Welche Filter anzeigen? Einfach True/False setzen:
 SHOW_ODOM             = False
 SHOW_KF               = True
 SHOW_EKF              = True
-SHOW_PF               = False
+SHOW_PF               = True
 SHOW_AMCL             = True
 SHOW_EKF_PREDICT_ONLY = False
 

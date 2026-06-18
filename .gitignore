@@ -21,4 +21,6 @@ __pycache__/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile
+Makefiletrajectory_log.csv
+rmse_evaluation.png
+trajectories_with_ellipses.png
