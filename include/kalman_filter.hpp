@@ -93,33 +93,31 @@ public:
     }
 
     // -------------------------------------------------------------------------
-    // Prediction step (linear KF)
+    // Prediction step (linear KF — no trigonometry)
     // -------------------------------------------------------------------------
     Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
-        const double theta = mu_(2);
         const double v     = u(0);
         const double omega = u(1);
 
-        // Mittelwert: absichtlich gleich wie EKF
-        mu_bar_(0) = mu_(0) + v * std::cos(theta) * dt;
-        mu_bar_(1) = mu_(1) + v * std::sin(theta) * dt;
-        mu_bar_(2) = correctAngle(mu_(2) + omega * dt);
+        // Linear motion model: velocities carried forward directly
+        mu_bar_(0) = mu_(0) + mu_(3) * dt;
+        mu_bar_(1) = mu_(1) + mu_(4) * dt;
+        mu_bar_(2) = correctAngle(mu_(2) + mu_(5) * dt);
 
-        mu_bar_(3) = v * std::cos(theta);
-        mu_bar_(4) = v * std::sin(theta);
+        mu_bar_(3) = v;
+        mu_bar_(4) = 0.0;
         mu_bar_(5) = omega;
 
-        // KF: lineares Kovarianzmodell, keine theta-Ableitungen
+        // A matrix: no dt off-diagonal terms (purely identity block)
         A_ = Matrix6d::Zero();
 
         A_(0, 0) = 1.0;
         A_(1, 1) = 1.0;
         A_(2, 2) = 1.0;
-
-        A_(0, 3) = dt;
-        A_(1, 4) = dt;
-        A_(2, 5) = dt;
+        A_(3, 3) = 1.0;
+        A_(4, 4) = 1.0;
+        A_(5, 5) = 1.0;
 
         Sigma_bar_ = A_ * Sigma_ * A_.transpose() + R_;
 
@@ -150,35 +148,36 @@ public:
     }
 
     // -------------------------------------------------------------------------
-    // Landmark correction — uses mu_ / Sigma_ (post-odom)
+    // Landmark correction — linear H matrix (no Jacobian)
     // -------------------------------------------------------------------------
     Vector6d correctLandmark(
         const Eigen::Vector2d & z_lm,
         const Eigen::Vector2d & landmark)
     {
-        const double x     = mu_(0);
-        const double y     = mu_(1);
-        const double theta = mu_(2);
-        const double lx    = landmark(0);
-        const double ly    = landmark(1);
+        const double x  = mu_(0);
+        const double y  = mu_(1);
+        const double lx = landmark(0);
+        const double ly = landmark(1);
 
         const double dx = lx - x;
         const double dy = ly - y;
-        const double q  = dx * dx + dy * dy;
-        const double r  = std::sqrt(q);
+        const double r  = std::sqrt(dx * dx + dy * dy);
 
         if (r < 1e-6) { return mu_; }
 
+        // Predicted measurement (still polar for the innovation)
+        const double theta = mu_(2);
         Eigen::Vector2d z_hat;
         z_hat(0) = r;
         z_hat(1) = correctAngle(std::atan2(dy, dx) - theta);
 
+        // Linear measurement matrix H (constant, no trigonometric derivatives)
+        // Row 0: range    approximated as direct x/y influence (unit direction)
+        // Row 1: bearing  approximated as direct angular state influence only
         Matrix2x6d H_lm = Matrix2x6d::Zero();
-        H_lm(0, 0) = -dx / r;
-        H_lm(0, 1) = -dy / r;
-        H_lm(1, 0) =  dy / q;
-        H_lm(1, 1) = -dx / q;
-        H_lm(1, 2) = -1.0;
+        H_lm(0, 0) = -dx / r;   // dr/dx  (constant unit vector component)
+        H_lm(0, 1) = -dy / r;   // dr/dy
+        H_lm(1, 2) = -1.0;      // dphi/dtheta
 
         Eigen::Matrix2d S = H_lm * Sigma_ * H_lm.transpose() + Q_lm_;
         K_lm_ = Sigma_ * H_lm.transpose() * S.inverse();
