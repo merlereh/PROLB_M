@@ -42,4 +42,4 @@
 
 
     # Effective dt multiplier: skip_n=1 → ~50ms, skip_n=5 → ~250ms
-    skip_n: 20
+    skip_n: 0
