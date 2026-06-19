@@ -27,13 +27,12 @@ static constexpr double LANDMARK_Y = 0.0;
 //
 // Trigger:  /odom + /scan     → Synchronizer (ApproximateTime, max 0.1s)
 // Input:    /cmd_vel          → Control u = [v, omega] (gecacht, max. 0.2s alt)
-//           /odom             → twist.linear.x + twist.angular.z für Velocity-Correct
+//           /odom             → z = [x_map, y_map, theta_map, vx_world, vy_world, omega]
 //           /scan             → Laser für Landmark
 //           /initialpose      → Startpose setzen
 // Output:   /ekf_pose         → geschätzte Pose als PoseWithCovarianceStamped
 // ---------------------------------------------------------------------------
 
-// Sync: /odom + /scan müssen zeitlich zusammenpassen
 using SyncPolicy = message_filters::sync_policies::ApproximateTime<
     nav_msgs::msg::Odometry,
     sensor_msgs::msg::LaserScan>;
@@ -50,6 +49,9 @@ public:
     this->declare_parameter("r_vx",         0.10);
     this->declare_parameter("r_vy",         0.05);
     this->declare_parameter("r_omega",      0.05);
+    this->declare_parameter("q_x",          0.10);
+    this->declare_parameter("q_y",          0.10);
+    this->declare_parameter("q_theta",      0.05);
     this->declare_parameter("q_vx",         0.10);
     this->declare_parameter("q_vy",         0.10);
     this->declare_parameter("q_omega",      0.05);
@@ -64,6 +66,9 @@ public:
       this->get_parameter("r_vx").as_double(),
       this->get_parameter("r_vy").as_double(),
       this->get_parameter("r_omega").as_double(),
+      this->get_parameter("q_x").as_double(),
+      this->get_parameter("q_y").as_double(),
+      this->get_parameter("q_theta").as_double(),
       this->get_parameter("q_vx").as_double(),
       this->get_parameter("q_vy").as_double(),
       this->get_parameter("q_omega").as_double(),
@@ -80,7 +85,8 @@ public:
                   msg->pose.pose.position.y,
                   getYaw(msg->pose.pose.orientation);
           filter_.setState(pose);
-          initialized_ = true;
+          odom_initialized_ = false;
+          initialized_      = true;
           RCLCPP_INFO(this->get_logger(),
             "EKF init: x=%.3f y=%.3f th=%.3f", pose(0), pose(1), pose(2));
         });
@@ -117,23 +123,32 @@ public:
   }
 
 private:
-  // Wird gefeuert wenn /odom + /scan zeitlich zusammenpassen
   void syncCallback(
-    const nav_msgs::msg::Odometry::ConstSharedPtr  & odom_msg,
-    const sensor_msgs::msg::LaserScan::ConstSharedPtr & scan_msg)
+    const nav_msgs::msg::Odometry::ConstSharedPtr      & odom_msg,
+    const sensor_msgs::msg::LaserScan::ConstSharedPtr  & scan_msg)
   {
     if (!initialized_) return;
-
-    // Nur updaten wenn cmd_vel nicht älter als 0.2s
     if (!has_cmd_vel_) return;
     if (std::abs((this->now() - last_cmd_time_).seconds()) > 0.2) return;
 
     rclcpp::Time current_time = odom_msg->header.stamp;
 
-    // --- Einmalig: last_time_ initialisieren ---
-    if (!time_initialized_) {
+    const double x_odom     = odom_msg->pose.pose.position.x;
+    const double y_odom     = odom_msg->pose.pose.position.y;
+    const double theta_odom = getYaw(odom_msg->pose.pose.orientation);
+
+    // --- Einmalig: Offset odom → map berechnen ---
+    if (!odom_initialized_) {
+      const Vector6d & s = filter_.state();
+      offset_theta_ = correctAngle(s(2) - theta_odom);
+      const double co = std::cos(offset_theta_), so = std::sin(offset_theta_);
+      offset_x_ = s(0) - (co * x_odom - so * y_odom);
+      offset_y_ = s(1) - (so * x_odom + co * y_odom);
       last_time_        = current_time;
-      time_initialized_ = true;
+      odom_initialized_ = true;
+      RCLCPP_INFO(this->get_logger(),
+        "Odom-Offset: dx=%.3f dy=%.3f dth=%.3f",
+        offset_x_, offset_y_, offset_theta_);
       return;
     }
 
@@ -141,27 +156,33 @@ private:
     last_time_ = current_time;
     if (dt <= 0.0 || dt > 1.0) return;
 
-    // --- Velocity-Messung aus odom.twist in Weltframe umrechnen ---
-    // v     = odom.twist.linear.x   (Geschwindigkeit im Roboterframe)
-    // omega = odom.twist.angular.z
-    // theta_current = aktueller Heading-Schätzwert des Filters
-    const double theta_current = filter_.state()(2);
-    const double v_odom        = odom_msg->twist.twist.linear.x;
-    const double omega_odom    = odom_msg->twist.twist.angular.z;
-    Eigen::Vector3d z_vel;
-    z_vel(0) = v_odom * std::cos(theta_current);   // vx_world
-    z_vel(1) = v_odom * std::sin(theta_current);   // vy_world
-    z_vel(2) = omega_odom;                          // omega
+    // --- z = [x_map, y_map, theta_map, vx_world, vy_world, omega] ---
+    const double co = std::cos(offset_theta_), so = std::sin(offset_theta_);
+    const double x_map     = co * x_odom - so * y_odom + offset_x_;
+    const double y_map     = so * x_odom + co * y_odom + offset_y_;
+    const double theta_map = correctAngle(theta_odom + offset_theta_);
 
-    // --- 1) EKF Predict: gecachten Control-Input verwenden ---
+    const double v_odom     = odom_msg->twist.twist.linear.x;
+    const double omega_odom = odom_msg->twist.twist.angular.z;
+    const double theta_cur  = filter_.state()(2);
+
+    Vector6d z_full;
+    z_full(0) = x_map;
+    z_full(1) = y_map;
+    z_full(2) = theta_map;
+    z_full(3) = v_odom * std::cos(theta_cur);   // vx_world
+    z_full(4) = v_odom * std::sin(theta_cur);   // vy_world
+    z_full(5) = omega_odom;                      // omega
+
+    // --- 1) EKF Predict ---
     Eigen::Vector2d u;
     u << last_v_, last_omega_;
     filter_.predict(u, dt);
 
-    // --- 2) EKF Correct: Velocity-Messung einbauen ---
-    Vector6d estimate = filter_.correctVelocity(z_vel);
+    // --- 2) EKF Correct: alle 6 Komponenten auf einmal ---
+    Vector6d estimate = filter_.correctFull(z_full);
 
-    // --- 3) EKF Correct: Landmark-Update ---
+    // --- 3) EKF Correct: Landmark ---
     const Vector6d & state = filter_.state();
     double r_meas, phi_meas;
     if (detectLandmark(*scan_msg, state(0), state(1), state(2),
@@ -174,7 +195,7 @@ private:
         r_meas, phi_meas, estimate(0), estimate(1));
     }
 
-    // --- 4) Geschätzte Pose publizieren ---
+    // --- 4) Pose publizieren ---
     publishPose(estimate, odom_msg->header.stamp, "map");
   }
 
@@ -187,10 +208,7 @@ private:
     double r, p, y; tf2::Matrix3x3(q).getRPY(r, p, y); return y;
   }
 
-  // Pose + Kovarianz als PoseWithCovarianceStamped publizieren
-  void publishPose(const Vector6d & s,
-                   const rclcpp::Time & stamp,
-                   const std::string & fid)
+  void publishPose(const Vector6d & s, const rclcpp::Time & stamp, const std::string & fid)
   {
     geometry_msgs::msg::PoseWithCovarianceStamped msg;
     msg.header.stamp    = stamp;
@@ -201,40 +219,28 @@ private:
     msg.pose.pose.orientation = tf2::toMsg(q);
     for (int i = 0; i < 36; ++i) msg.pose.covariance[i] = 0.0;
     const auto & cov = filter_.covariance();
-    msg.pose.covariance[0]  = cov(0,0);  // x-Varianz
-    msg.pose.covariance[7]  = cov(1,1);  // y-Varianz
-    msg.pose.covariance[35] = cov(2,2);  // theta-Varianz
-    msg.pose.covariance[1]  = cov(0,1);  // xy-Kovarianz
-    msg.pose.covariance[6]  = cov(1,0);  // yx-Kovarianz
+    msg.pose.covariance[0]  = cov(0,0);
+    msg.pose.covariance[7]  = cov(1,1);
+    msg.pose.covariance[35] = cov(2,2);
+    msg.pose.covariance[1]  = cov(0,1);
+    msg.pose.covariance[6]  = cov(1,0);
     pose_pub_->publish(msg);
   }
 
-  // --- Synchronizer: /odom + /scan ---
   message_filters::Subscriber<nav_msgs::msg::Odometry>      odom_sub_;
   message_filters::Subscriber<sensor_msgs::msg::LaserScan>  scan_sub_;
   std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
-  // --- Subscriptions ---
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
-
-  // --- Publisher ---
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_pub_;
 
-  // --- Extended Kalman Filter ---
   ExtendedKalmanFilter filter_;
 
-  // --- Gecachter Control-Input + Zeitstempel ---
-  double       last_v_{0.0}, last_omega_{0.0};
-  rclcpp::Time last_cmd_time_;
-  bool         has_cmd_vel_{false};
-
-  // --- Zeitstempel letzter Update ---
-  rclcpp::Time last_time_;
-
-  // --- Initialisierungsflag ---
-  bool initialized_{false};
-  bool time_initialized_{false};
+  double offset_x_{0.0}, offset_y_{0.0}, offset_theta_{0.0};
+  double last_v_{0.0}, last_omega_{0.0};
+  rclcpp::Time last_cmd_time_, last_time_;
+  bool has_cmd_vel_{false}, initialized_{false}, odom_initialized_{false};
 };
 
 int main(int argc, char * argv[])
