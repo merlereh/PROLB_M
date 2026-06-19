@@ -11,12 +11,12 @@
     # Process noise R (how much we distrust the motion model)
     # Higher = more uncertainty in prediction → filter trusts sensor more
     # -------------------------------------------------------------------------
-    r_x:       0.1   # position x
-    r_y:       0.1   # position y
-    r_theta:   0.05   # heading
+    r_x:       0.01   # position x
+    r_y:       0.01   # position y
+    r_theta:   0.005   # heading
     r_vx:      0.1   # velocity x
     r_vy:      0.1   # velocity y
-    r_omega:   0.05  # angular velocity
+    r_omega:   0.005  # angular velocity
 
     # -------------------------------------------------------------------------
     # Odometry measurement noise Q_odom (how much we distrust the odom sensor)
@@ -24,13 +24,13 @@
     # -------------------------------------------------------------------------
     q_odom_x:     0.5
     q_odom_y:     0.5
-    q_odom_theta: 0.2
+    q_odom_theta: 0.1
 
     # -------------------------------------------------------------------------
     # Landmark measurement noise Q_lm
     # -------------------------------------------------------------------------
-    q_lm_r:   0.1   # range noise
-    q_lm_phi: 0.05   # bearing noise
+    q_lm_r:   0.5   # range noise
+    q_lm_phi: 0.1  # bearing noise
 
     # -------------------------------------------------------------------------
     # PF only: threshold factor for resampling
@@ -42,4 +42,4 @@
 
 
     # Effective dt multiplier: skip_n=1 → ~50ms, skip_n=5 → ~250ms
-    skip_n: 1
+    skip_n: 20

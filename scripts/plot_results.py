@@ -12,7 +12,7 @@ SHOW_AMCL             = True
 SHOW_EKF_PREDICT_ONLY = False
 
 # Ellipse alle N Posen zeichnen (0 = keine Ellipsen)
-ELLIPSE_EVERY = 40
+ELLIPSE_EVERY = 80
 N_STD         = 2.0   # 1-sigma, 2-sigma, ...
 
 CSV_FILE = "trajectory_log.csv"

@@ -67,10 +67,14 @@ private:
 
   void tick()
   {
-    if (!init_pose_done_) {
+    // Pose mehrfach senden (5x alle 500ms) damit alle Nodes sie sicher empfangen
+    if (init_pose_counter_ < 5) {
       sendInitialPose();
-      init_pose_done_ = true;
+      init_pose_counter_++;
       return;
+    }
+    if (!init_pose_done_) {
+      init_pose_done_ = true;
     }
 
     if (waiting_for_result_) {
@@ -200,6 +204,7 @@ private:
   GoalHandleNav::SharedPtr current_goal_handle_{nullptr};
 
   bool init_pose_done_{false};
+  int  init_pose_counter_{0};
   bool waiting_for_result_{false};
   int  current_waypoint_index_{0};
 };

@@ -5,34 +5,45 @@
 #include <numeric>
 #include <random>
 #include <vector>
-#include <string>
 
-// State: [x, y, theta, vx, vy, theta_dot]
-// Control input: u = [v, omega]  (from /cmd_vel)
-// Odom measurement:     z_odom = [x, y, theta]
-// Landmark measurement: z_lm   = [r, phi]
+// ============================================================================
+// Particle Filter  —  Notation nach Vorlesungsfolien (Thrun 2006)
 //
-// Resampling strategy: Threshold + Multinomial
+// State:   x = [x, y, theta, vx, vy, omega]   (6x1)
+// Control: u = [v, omega]                      (2x1)
 //
-//   Before drawing, every particle whose weight is below
-//       threshold_factor_ * (1.0 / N)
-//   is excluded from the candidate pool.
-//   The remaining "good" particles are then resampled with
-//   standard multinomial drawing (proportional to weight).
+// Algorithmus:
+//   Initialization:
+//     Partikel gleichverteilt im erlaubten Raum erzeugen
+//     Alle Gewichte gleich: w_i = 1 / N
 //
-//   threshold_factor_ = 0.0  →  pure multinomial (no filtering)
-//   threshold_factor_ = 0.5  →  particles below 50 % of average are dropped
-//   threshold_factor_ = 1.5  →  only well-above-average particles survive
+//   Predict:
+//     Jedes Partikel wird mit dem Bewegungsmodell + Rauschen bewegt
 //
-//   *** Change only threshold_factor_ to compare the three strategies. ***
+//   Weighting:
+//     Jedes Partikel wird mit der Messung verglichen
+//     w_i ∝ exp(-0.5 * ||z - h(x_i)||^2_Q)
+//
+//   Resampling:
+//     Gute Partikel werden häufiger gezogen, schlechte verschwinden
+//     Nach Resampling: alle Gewichte wieder gleich w_i = 1 / N
+//
+// Weighting Velocity (Odom-Twist):
+//   z = [vx_world, vy_world, omega]
+//   Fehler pro Partikel: err = [p_vx - vx_world, p_vy - vy_world, p_omega - omega]
+//   w_i ∝ exp(-0.5 * (err_vx²/Q_vx + err_vy²/Q_vy + err_omega²/Q_omega))
+//
+// Rauschen:
+//   R   — Bewegungsrauschen  (6x6, Diagonale)
+//   Q   — Messrauschen       (3x3 Velocity / 2x2 Landmark)
+// ============================================================================
 
 using Vector6d = Eigen::Matrix<double, 6, 1>;
 
 class ParticleFilter
 {
 public:
-    ParticleFilter(
-        int num_particles = 1000,
+    ParticleFilter(int num_particles = 1000,
         double x_min = 0.0, double x_max = 6.0,
         double y_min = 0.0, double y_max = 10.0)
     : num_particles_(num_particles),
@@ -40,59 +51,70 @@ public:
       y_min_(y_min), y_max_(y_max),
       random_generator_(std::random_device{}())
     {
+        // R — Bewegungsrauschen (6x6) — Diagonalmatrix
+        //
+        //         x     y   theta   vx    vy   omega
+        //   x  [ 0.05   0     0      0      0     0   ]
+        //   y  [  0   0.05    0      0      0     0   ]
+        // theta [  0    0    0.02    0      0     0   ]
+        //  vx  [  0    0     0     0.1     0     0   ]
+        //  vy  [  0    0     0      0    0.05    0   ]
+        // omega [  0    0     0      0      0   0.05  ]
         R_ = Eigen::Matrix<double, 6, 6>::Zero();
-        R_(0, 0) = 0.05;
-        R_(1, 1) = 0.05;
-        R_(2, 2) = 0.02;
-        R_(3, 3) = 0.1;
-        R_(4, 4) = 0.05;
-        R_(5, 5) = 0.05;
+        R_(0,0) = 0.05;
+        R_(1,1) = 0.05;
+        R_(2,2) = 0.02;
+        R_(3,3) = 0.1;
+        R_(4,4) = 0.05;
+        R_(5,5) = 0.05;
 
-        Q_odom_ = Eigen::Matrix3d::Zero();
-        Q_odom_(0, 0) = 0.05;
-        Q_odom_(1, 1) = 0.05;
-        Q_odom_(2, 2) = 0.03;
+        // Q_vel — Messrauschen Velocity (3x3) — Diagonalmatrix
+        //
+        //         vx        vy      omega
+        //  vx  [ q_vx       0        0   ]
+        //  vy  [   0      q_vy       0   ]
+        // omega [   0        0    q_omega ]
+        Q_vel_ = Eigen::Matrix3d::Zero();
+        Q_vel_(0,0) = 0.05;
+        Q_vel_(1,1) = 0.05;
+        Q_vel_(2,2) = 0.03;
 
+        // Q_lm — Messrauschen Landmark (2x2) — Diagonalmatrix
+        //
+        //       r      phi
+        //   r  [ 0.1    0   ]
+        //  phi [  0   0.02  ]
         Q_lm_ = Eigen::Matrix2d::Zero();
-        Q_lm_(0, 0) = 0.1;
-        Q_lm_(1, 1) = 0.02;
+        Q_lm_(0,0) = 0.1;
+        Q_lm_(1,1) = 0.02;
 
         initializeParticles();
     }
 
     ~ParticleFilter() = default;
 
-    // =========================================================================
-    //  *** CHANGE THIS VALUE to compare resampling strategies ***
-    //
-    //   0.0  →  pure multinomial  (baseline, no threshold)
-    //   0.5  →  drop below 50 % of average weight
-    //   1.5  →  drop below 150 % of average weight (aggressive)
-    // =========================================================================
     double threshold_factor_ = 0.5;
 
-    // Set noise parameters from ROS2 params / filter_params.yaml
     void setNoiseParams(
         double r_x,  double r_y,  double r_theta,
         double r_vx, double r_vy, double r_omega,
         double q_odom_x, double q_odom_y, double q_odom_theta,
         double q_lm_r,   double q_lm_phi)
     {
-        R_(0, 0) = r_x;
-        R_(1, 1) = r_y;
-        R_(2, 2) = r_theta;
-        R_(3, 3) = r_vx;
-        R_(4, 4) = r_vy;
-        R_(5, 5) = r_omega;
+        // R — Bewegungsrauschen
+        R_(0,0) = r_x;    R_(1,1) = r_y;    R_(2,2) = r_theta;
+        R_(3,3) = r_vx;   R_(4,4) = r_vy;   R_(5,5) = r_omega;
 
-        Q_odom_(0, 0) = q_odom_x;
-        Q_odom_(1, 1) = q_odom_y;
-        Q_odom_(2, 2) = q_odom_theta;
-
-        Q_lm_(0, 0) = q_lm_r;
-        Q_lm_(1, 1) = q_lm_phi;
+        // Q — Messrauschen
+        Q_vel_(0,0)  = q_odom_x;   Q_vel_(1,1)  = q_odom_y;   Q_vel_(2,2)  = q_odom_theta;
+        Q_lm_(0,0)   = q_lm_r;     Q_lm_(1,1)   = q_lm_phi;
     }
 
+    // -----------------------------------------------------------------------
+    // INITIALIZATION
+    // Partikel gleichverteilt im ganzen erlaubten Raum erzeugen
+    // Alle Gewichte gleich: w_i = 1 / N
+    // -----------------------------------------------------------------------
     void initializeParticles()
     {
         particles_.clear();
@@ -100,263 +122,249 @@ public:
 
         std::uniform_real_distribution<double> x_dist(x_min_, x_max_);
         std::uniform_real_distribution<double> y_dist(y_min_, y_max_);
-        std::uniform_real_distribution<double> theta_dist(-M_PI, M_PI);
+        std::uniform_real_distribution<double> t_dist(-M_PI, M_PI);
 
         for (int i = 0; i < num_particles_; ++i) {
             Vector6d p = Vector6d::Zero();
             p(0) = x_dist(random_generator_);
             p(1) = y_dist(random_generator_);
-            p(2) = theta_dist(random_generator_);
+            p(2) = t_dist(random_generator_);
             particles_.push_back(p);
-            weights_.push_back(1.0 / static_cast<double>(num_particles_));
+            weights_.push_back(1.0 / num_particles_);
         }
 
         mu_     = computeMean();
         mu_bar_ = mu_;
     }
 
-    void initializeParticlesAroundState(const Eigen::Vector3d & initial_pose)
+    void initializeParticlesAroundState(const Eigen::Vector3d & pose)
     {
         particles_.clear();
         weights_.clear();
 
-        std::normal_distribution<double> nx(0.0, 1.0);
-        std::normal_distribution<double> ny(0.0, 1.0);
-        std::normal_distribution<double> ntheta(0.0, 0.5);
+        std::normal_distribution<double> n_x(0.0, 1.0);
+        std::normal_distribution<double> n_y(0.0, 1.0);
+        std::normal_distribution<double> n_t(0.0, 0.5);
 
         for (int i = 0; i < num_particles_; ++i) {
             Vector6d p = Vector6d::Zero();
-            p(0) = initial_pose(0) + nx(random_generator_);
-            p(1) = initial_pose(1) + ny(random_generator_);
-            p(2) = correctAngle(initial_pose(2) + ntheta(random_generator_));
+            p(0) = pose(0) + n_x(random_generator_);
+            p(1) = pose(1) + n_y(random_generator_);
+            p(2) = correctAngle(pose(2) + n_t(random_generator_));
             particles_.push_back(p);
-            weights_.push_back(1.0 / static_cast<double>(num_particles_));
+            weights_.push_back(1.0 / num_particles_);
         }
 
         mu_     = computeMean();
         mu_bar_ = mu_;
     }
 
-    // Prediction: sample motion model for each particle
+    // -----------------------------------------------------------------------
+    // PREDICTION + WEIGHTING + RESAMPLING — Odometrie (alles in einem Schritt)
+    // -----------------------------------------------------------------------
+    Vector6d update(const Eigen::Vector2d & u, const Eigen::Vector3d & z_vel, double dt)
+    {
+        predict(u, dt);
+        computeWeightsVelocity(z_vel);
+        resample();
+        return mu_;
+    }
+
+    // -----------------------------------------------------------------------
+    // WEIGHTING + RESAMPLING — Landmark (ohne neue Prediction)
+    // -----------------------------------------------------------------------
+    Vector6d updateLandmark(const Eigen::Vector2d & z_lm, const Eigen::Vector2d & lm)
+    {
+        computeWeightsLandmark(z_lm, lm);
+        resample();
+        return mu_;
+    }
+
+    // -----------------------------------------------------------------------
+    // PREDICT
+    // Jedes Partikel wird mit dem Bewegungsmodell bewegt.
+    // Zusätzlich bekommt jedes Partikel eigenes Bewegungsrauschen (aus R).
+    // -----------------------------------------------------------------------
     Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
-        const double v     = u(0);
-        const double omega = u(1);
+        const double v = u(0), omega = u(1);
 
-        std::normal_distribution<double> n_x    (0.0, std::sqrt(R_(0, 0)));
-        std::normal_distribution<double> n_y    (0.0, std::sqrt(R_(1, 1)));
-        std::normal_distribution<double> n_theta(0.0, std::sqrt(R_(2, 2)));
-        std::normal_distribution<double> n_vx   (0.0, std::sqrt(R_(3, 3)));
-        std::normal_distribution<double> n_vy   (0.0, std::sqrt(R_(4, 4)));
-        std::normal_distribution<double> n_tdot (0.0, std::sqrt(R_(5, 5)));
+        // Rauschen pro Achse — Standardabweichung = sqrt(R_diag)
+        std::normal_distribution<double> n_x  (0.0, std::sqrt(R_(0,0)));
+        std::normal_distribution<double> n_y  (0.0, std::sqrt(R_(1,1)));
+        std::normal_distribution<double> n_t  (0.0, std::sqrt(R_(2,2)));
+        std::normal_distribution<double> n_vx (0.0, std::sqrt(R_(3,3)));
+        std::normal_distribution<double> n_vy (0.0, std::sqrt(R_(4,4)));
+        std::normal_distribution<double> n_td (0.0, std::sqrt(R_(5,5)));
+
+        // =====================
+        // PREDICT
+        // =====================
+        // Jedes Partikel wird einzeln bewegt + bekommt eigenes Rauschen
 
         for (auto & p : particles_) {
             const double theta = p(2);
+
             p(0) = p(0) + p(3) * dt + n_x(random_generator_);
             p(1) = p(1) + p(4) * dt + n_y(random_generator_);
-            p(2) = correctAngle(p(2) + p(5) * dt + n_theta(random_generator_));
+            p(2) = correctAngle(p(2) + p(5) * dt + n_t(random_generator_));
             p(3) = v * std::cos(theta) + n_vx(random_generator_);
             p(4) = v * std::sin(theta) + n_vy(random_generator_);
-            p(5) = omega               + n_tdot(random_generator_);
+            p(5) = omega              + n_td(random_generator_);
         }
 
         mu_bar_ = computeMean();
         return mu_bar_;
     }
 
-    // Normal cycle: predict + odom weighting + resample
-    Vector6d update(
-        const Eigen::Vector2d & u,
-        const Eigen::Vector3d & z_odom,
-        double dt)
-    {
-        predict(u, dt);
-        computeWeightsOdom(z_odom);
-        resample();
-        return mu_;
-    }
-
-    // Landmark update: call AFTER update() in the same timestep
-    Vector6d updateLandmark(
-        const Eigen::Vector2d & z_lm,
-        const Eigen::Vector2d & landmark)
-    {
-        computeWeightsLandmark(z_lm, landmark);
-        resample();
-        return mu_;
-    }
-
-    const Vector6d & state()          const { return mu_; }
-    const Vector6d & predictedState() const { return mu_bar_; }
-    const std::vector<Vector6d> & particles() const { return particles_; }
-    const std::vector<double>   & weights()   const { return weights_; }
+    const Vector6d             & state()          const { return mu_; }
+    const Vector6d             & predictedState() const { return mu_bar_; }
+    const std::vector<Vector6d>& particles()      const { return particles_; }
+    const std::vector<double>  & weights()        const { return weights_; }
 
 private:
-    static double correctAngle(double angle)
-    {
-        return std::atan2(std::sin(angle), std::cos(angle));
-    }
+    static double correctAngle(double a)
+    { return std::atan2(std::sin(a), std::cos(a)); }
 
     Vector6d computeMean() const
     {
-        Vector6d mean = Vector6d::Zero();
-        double sin_sum = 0.0;
-        double cos_sum = 0.0;
+        Vector6d m = Vector6d::Zero();
+        double ss = 0.0, cs = 0.0;
 
         for (const auto & p : particles_) {
-            mean(0) += p(0);
-            mean(1) += p(1);
-            sin_sum += std::sin(p(2));
-            cos_sum += std::cos(p(2));
-            mean(3) += p(3);
-            mean(4) += p(4);
-            mean(5) += p(5);
+            m(0) += p(0);  m(1) += p(1);
+            ss   += std::sin(p(2));
+            cs   += std::cos(p(2));
+            m(3) += p(3);  m(4) += p(4);  m(5) += p(5);
         }
 
-        const double n = static_cast<double>(num_particles_);
-        mean(0) /= n;
-        mean(1) /= n;
-        mean(2)  = std::atan2(sin_sum, cos_sum);
-        mean(3) /= n;
-        mean(4) /= n;
-        mean(5) /= n;
+        const double n = num_particles_;
+        m(0) /= n;  m(1) /= n;
+        m(2) = std::atan2(ss, cs);
+        m(3) /= n;  m(4) /= n;  m(5) /= n;
 
-        return mean;
+        return m;
     }
 
-    void normalizeWeights(double weight_sum)
+    void normalizeWeights(double ws)
     {
-        if (weight_sum > 0.0) {
-            for (auto & w : weights_) { w /= weight_sum; }
-        } else {
-            for (auto & w : weights_) {
-                w = 1.0 / static_cast<double>(num_particles_);
-            }
-        }
+        if (ws > 0.0) { for (auto & w : weights_) w /= ws; }
+        else          { for (auto & w : weights_) w  = 1.0 / num_particles_; }
     }
 
-    // Odom weighting
-    void computeWeightsOdom(const Eigen::Vector3d & z_odom)
+    // -----------------------------------------------------------------------
+    // WEIGHTING — Velocity (Odom-Twist)
+    // Vergleich Partikel-Velocities [vx, vy, omega] mit Messung z_vel
+    // z_vel = [vx_world, vy_world, omega]  aus odom.twist umgerechnet
+    // w_i ∝ exp(-0.5 * (err_vx²/Q_vx + err_vy²/Q_vy + err_omega²/Q_omega))
+    // -----------------------------------------------------------------------
+    void computeWeightsVelocity(const Eigen::Vector3d & z_vel)
     {
-        double weight_sum = 0.0;
+        // =====================
+        // WEIGHTING
+        // =====================
+
+        double ws = 0.0;
 
         for (int i = 0; i < num_particles_; ++i) {
-            Eigen::Vector3d error;
-            error(0) = particles_[i](0) - z_odom(0);
-            error(1) = particles_[i](1) - z_odom(1);
-            error(2) = correctAngle(particles_[i](2) - z_odom(2));
+            const double err_vx    = particles_[i](3) - z_vel(0);
+            const double err_vy    = particles_[i](4) - z_vel(1);
+            const double err_omega = particles_[i](5) - z_vel(2);
 
-            double exponent =
-                -0.5 * (
-                    (error(0) * error(0)) / Q_odom_(0, 0) +
-                    (error(1) * error(1)) / Q_odom_(1, 1) +
-                    (error(2) * error(2)) / Q_odom_(2, 2)
-                );
+            double exp_val = -0.5 * (
+                err_vx    * err_vx    / Q_vel_(0,0) +
+                err_vy    * err_vy    / Q_vel_(1,1) +
+                err_omega * err_omega / Q_vel_(2,2));
 
-            weights_[i]  = std::exp(exponent) + 1e-300;
-            weight_sum  += weights_[i];
+            weights_[i] = std::exp(exp_val) + 1e-300;
+            ws += weights_[i];
         }
 
-        normalizeWeights(weight_sum);
+        normalizeWeights(ws);
     }
 
-    // Landmark weighting
-    void computeWeightsLandmark(
-        const Eigen::Vector2d & z_lm,
-        const Eigen::Vector2d & landmark)
+    // -----------------------------------------------------------------------
+    // WEIGHTING — Landmark
+    // Vergleich erwartete Messung h(x_i) = [r, phi] mit z_lm
+    // w_i ∝ exp(-0.5 * ||z_lm - h(x_i)||^2_Q)
+    // -----------------------------------------------------------------------
+    void computeWeightsLandmark(const Eigen::Vector2d & z_lm, const Eigen::Vector2d & lm)
     {
-        double weight_sum = 0.0;
-        const double lx = landmark(0);
-        const double ly = landmark(1);
+        // =====================
+        // WEIGHTING
+        // =====================
+
+        double ws = 0.0;
+        const double lx = lm(0), ly = lm(1);
 
         for (int i = 0; i < num_particles_; ++i) {
             const double x     = particles_[i](0);
             const double y     = particles_[i](1);
             const double theta = particles_[i](2);
+            const double dx    = lx - x;
+            const double dy    = ly - y;
+            const double r     = std::sqrt(dx*dx + dy*dy);
+            const double phi   = correctAngle(std::atan2(dy, dx) - theta);
 
-            const double dx  = lx - x;
-            const double dy  = ly - y;
-            const double r   = std::sqrt(dx * dx + dy * dy);
-            const double phi = correctAngle(std::atan2(dy, dx) - theta);
+            Eigen::Vector2d err = z_lm - Eigen::Vector2d(r, phi);
+            err(1) = correctAngle(err(1));
 
-            Eigen::Vector2d z_hat;
-            z_hat(0) = r;
-            z_hat(1) = phi;
+            double exp_val = -0.5 * (
+                err(0)*err(0) / Q_lm_(0,0) +
+                err(1)*err(1) / Q_lm_(1,1));
 
-            Eigen::Vector2d error = z_lm - z_hat;
-            error(1) = correctAngle(error(1));
-
-            double exponent =
-                -0.5 * (
-                    (error(0) * error(0)) / Q_lm_(0, 0) +
-                    (error(1) * error(1)) / Q_lm_(1, 1)
-                );
-
-            weights_[i] *= std::exp(exponent) + 1e-300;
-            weight_sum  += weights_[i];
+            weights_[i] *= std::exp(exp_val) + 1e-300;
+            ws += weights_[i];
         }
 
-        normalizeWeights(weight_sum);
+        normalizeWeights(ws);
     }
 
-    // =========================================================================
-    // Threshold + Multinomial resampling
-    //
-    // Step 1: Drop all particles whose weight is below the threshold.
-    //         threshold = threshold_factor_ * (1.0 / N)
-    //         If threshold_factor_ = 0.0, no particle is dropped (= pure multinomial).
-    //
-    // Step 2: Draw N particles from the surviving candidates,
-    //         proportional to their weight (multinomial).
-    //
-    // Step 3: Reset all weights to 1/N.
-    // =========================================================================
+    // -----------------------------------------------------------------------
+    // RESAMPLING
+    // Gute Partikel (hohes Gewicht) werden häufiger gezogen.
+    // Schlechte Partikel (niedriges Gewicht) verschwinden.
+    // Nach Resampling: alle Gewichte wieder gleich w_i = 1 / N
+    // -----------------------------------------------------------------------
     void resample()
     {
-        const double avg_weight = 1.0 / static_cast<double>(num_particles_);
-        const double threshold  = threshold_factor_ * avg_weight;
+        // =====================
+        // RESAMPLING
+        // =====================
 
-        // Step 1: collect indices of particles that pass the threshold
-        std::vector<int> good_indices;
-        good_indices.reserve(num_particles_);
-        for (int i = 0; i < num_particles_; ++i) {
-            if (weights_[i] >= threshold) {
-                good_indices.push_back(i);
-            }
+        const double avg = 1.0 / num_particles_;
+        const double thr = threshold_factor_ * avg;
+
+        // Nur Partikel über Schwellwert behalten
+        std::vector<int> good;
+        good.reserve(num_particles_);
+        for (int i = 0; i < num_particles_; ++i)
+            if (weights_[i] >= thr) good.push_back(i);
+
+        if (good.empty()) {
+            good.resize(num_particles_);
+            std::iota(good.begin(), good.end(), 0);
         }
 
-        // Safety: if everything got filtered (shouldn't happen but just in case),
-        // fall back to all particles so the filter never crashes.
-        if (good_indices.empty()) {
-            good_indices.resize(num_particles_);
-            std::iota(good_indices.begin(), good_indices.end(), 0);
-        }
+        std::vector<double> gw;
+        gw.reserve(good.size());
+        for (int idx : good) gw.push_back(weights_[idx]);
 
-        // Step 2: build weight list for only the good particles
-        std::vector<double> good_weights;
-        good_weights.reserve(good_indices.size());
-        for (int idx : good_indices) {
-            good_weights.push_back(weights_[idx]);
-        }
-
-        // Step 3: multinomial draw from the good candidates
-        std::discrete_distribution<int> dist(good_weights.begin(), good_weights.end());
+        std::discrete_distribution<int> dist(gw.begin(), gw.end());
 
         std::vector<Vector6d> resampled;
         resampled.reserve(num_particles_);
-        for (int i = 0; i < num_particles_; ++i) {
-            int chosen = good_indices[dist(random_generator_)];
-            resampled.push_back(particles_[chosen]);
-        }
+        for (int i = 0; i < num_particles_; ++i)
+            resampled.push_back(particles_[good[dist(random_generator_)]]);
 
         particles_ = resampled;
-        for (auto & w : weights_) { w = avg_weight; }
+
+        // Nach Resampling: alle Gewichte wieder gleich
+        for (auto & w : weights_) w = avg;
+
         mu_ = computeMean();
     }
 
-    // =========================================================================
-    // Member variables
-    // =========================================================================
     int    num_particles_;
     double x_min_, x_max_, y_min_, y_max_;
 
@@ -367,7 +375,7 @@ private:
     Vector6d mu_bar_ = Vector6d::Zero();
 
     Eigen::Matrix<double, 6, 6> R_;
-    Eigen::Matrix3d             Q_odom_;
+    Eigen::Matrix3d             Q_vel_;
     Eigen::Matrix2d             Q_lm_;
 
     std::mt19937 random_generator_;
