@@ -26,12 +26,12 @@ inline bool detectLandmark(
     double landmark_x,
     double landmark_y,
     double & r_out,
-    double & phi_out)
+    double & phi_out,
+    double range_tolerance   = 0.25,   // großzügiger als zuvor (0.20) → öfter erkannt
+    double angle_half_win    = 0.40,   // breiteres Suchfenster (zuvor 0.35)
+    int    min_cluster_beams = 2)      // weniger Beams nötig (zuvor 3)
 {
-    constexpr double CYLINDER_RADIUS   = 0.02;  // scale.x/2 aus Visualizer
-    constexpr double RANGE_TOLERANCE   = 0.20;   // etwas großzügiger
-    constexpr double ANGLE_HALF_WIN    = 0.35;   // größeres Suchfenster
-    constexpr int    MIN_CLUSTER_BEAMS = 3;
+    constexpr double CYLINDER_RADIUS = 0.02;  // scale.x/2 aus Visualizer
 
     const int num_beams = static_cast<int>(scan.ranges.size());
     if (num_beams == 0) { return false; }
@@ -51,7 +51,7 @@ inline bool detectLandmark(
     if (center_idx < 0 || center_idx >= num_beams) { return false; }
 
     const int half_win = static_cast<int>(
-        std::ceil(ANGLE_HALF_WIN / scan.angle_increment));
+        std::ceil(angle_half_win / scan.angle_increment));
 
     struct Beam { double r; double phi; };
     std::vector<Beam> cluster;
@@ -63,14 +63,14 @@ inline bool detectLandmark(
         if (i < 0 || i >= num_beams) { continue; }
         const double r = scan.ranges[i];
         if (!std::isfinite(r) || r < scan.range_min || r > scan.range_max) { continue; }
-        if (std::abs(r - r_expected) <= RANGE_TOLERANCE) {
+        if (std::abs(r - r_expected) <= range_tolerance) {
             const double phi = scan.angle_min + i * scan.angle_increment;
             cluster.push_back({r, phi});
             if (r < min_r) { min_r = r; }
         }
     }
 
-    if (static_cast<int>(cluster.size()) < MIN_CLUSTER_BEAMS) { return false; }
+    if (static_cast<int>(cluster.size()) < min_cluster_beams) { return false; }
 
     double phi_sum = 0.0;
     for (const auto & b : cluster) { phi_sum += b.phi; }

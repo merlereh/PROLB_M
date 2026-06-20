@@ -21,20 +21,28 @@
     # -------------------------------------------------------------------------
     # Odometry measurement noise Q_odom (how much we distrust the odom sensor)
     # Higher = less trust in odom → filter relies more on prediction
+    # z = [x_map, y_map, theta_map] — nur Pose, keine Geschwindigkeiten
     # -------------------------------------------------------------------------
     
     q_x:      0.1
     q_y:      0.1
     q_theta:  0.05
-    q_vx:     0.1
-    q_vy:     0.1
-    q_omega:  0.05
+
+    # -------------------------------------------------------------------------
+    # Künstliches Odom-Rauschen (Standardabweichung, Gaussian)
+    # Da /odom in der Simulation sehr genau ist (nah an cmd_vel), wird hier
+    # zusätzliches Rauschen auf x/y/theta der Odom-Pose addiert, bevor sie
+    # in die Filter-Correction (z = [x_map, y_map, theta_map]) einfließt.
+    # -------------------------------------------------------------------------
+    odom_noise_x:     0.00   # [m]
+    odom_noise_y:     0.00   # [m]
+    odom_noise_theta: 0.00   # [rad]
 
     # -------------------------------------------------------------------------
     # Landmark measurement noise Q_lm
     # -------------------------------------------------------------------------
-    q_lm_r:   0.1   # range noise
-    q_lm_phi: 0.05  # bearing noise
+    q_lm_r:   0.5   # range noise
+    q_lm_phi: 0.1  # bearing noise
 
     # -------------------------------------------------------------------------
     # PF only: threshold factor for resampling

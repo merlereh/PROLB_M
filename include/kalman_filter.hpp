@@ -10,13 +10,10 @@
 // Control: u = [v, omega]                      (2x1)
 //
 // Correction Full (Odom):
-//   z = [x_map, y_map, theta_map, vx_world, vy_world, omega]
+//   z = [x_map, y_map, theta_map]
 //   x/y/theta aus odom.pose  (nach Offset-Transform in Map-Frame)
-//   vx_world = v * cos(theta_current)   aus odom.twist.linear.x
-//   vy_world = v * sin(theta_current)   aus odom.twist.linear.x
-//   omega    = odom.twist.angular.z
 //
-//   h(x) = x  →  linear  →  C = I6  (Identitätsmatrix)
+//   h(x) = [x, y, theta]  →  linear  →  C = [I3 | 0]  (3x6)
 //
 // Correction Landmark:
 //   z_lm = [r, phi]  —  C_lm bleibt LINEAR
@@ -26,6 +23,9 @@ using Vector6d   = Eigen::Matrix<double, 6, 1>;
 using Matrix6d   = Eigen::Matrix<double, 6, 6>;
 using Matrix6x2d = Eigen::Matrix<double, 6, 2>;
 using Matrix2x6d = Eigen::Matrix<double, 2, 6>;
+using Matrix3x6d = Eigen::Matrix<double, 3, 6>;
+using Matrix6x3d = Eigen::Matrix<double, 6, 3>;
+using Matrix3d   = Eigen::Matrix<double, 3, 3>;
 
 class KalmanFilter
 {
@@ -65,16 +65,13 @@ public:
         // omega [  0     0     0      0     0  r_omega]
         R_ = Matrix6d::Zero();
 
-        // Q_full — Messrauschen Full Correction (6x6) — wird per setNoiseParams befüllt
+        // Q_full — Messrauschen Full Correction (3x3) — wird per setNoiseParams befüllt
         //
-        //         x       y     theta    vx      vy    omega
-        //   x  [ q_x      0      0       0       0      0   ]
-        //   y  [  0      q_y     0       0       0      0   ]
-        // theta [  0       0   q_theta   0       0      0   ]
-        //  vx  [  0       0      0      q_vx     0      0   ]
-        //  vy  [  0       0      0       0      q_vy    0   ]
-        // omega [  0       0      0       0       0   q_omega]
-        Q_full_ = Matrix6d::Zero();
+        //         x       y     theta
+        //   x  [ q_x      0      0   ]
+        //   y  [  0      q_y     0   ]
+        // theta [  0       0   q_theta]
+        Q_full_ = Matrix3d::Zero();
 
         // Q_lm — Messrauschen Landmark (2x2) — wird per setNoiseParams befüllt
         //
@@ -83,7 +80,7 @@ public:
         //  phi [    0     q_lm_phi ]
         Q_lm_ = Eigen::Matrix2d::Zero();
 
-        K_full_ = Matrix6d::Zero();
+        K_full_ = Matrix6x3d::Zero();
         K_lm_   = Matrix6x2d::Zero();
     }
 
@@ -93,16 +90,14 @@ public:
         double r_x,     double r_y,     double r_theta,
         double r_vx,    double r_vy,    double r_omega,
         double q_x,     double q_y,     double q_theta,
-        double q_vx,    double q_vy,    double q_omega,
         double q_lm_r,  double q_lm_phi)
     {
         // R — Prozessrauschen
         R_(0,0) = r_x;    R_(1,1) = r_y;    R_(2,2) = r_theta;
         R_(3,3) = r_vx;   R_(4,4) = r_vy;   R_(5,5) = r_omega;
 
-        // Q — Messrauschen Full
+        // Q — Messrauschen Full (nur x, y, theta — aus odom.pose)
         Q_full_(0,0) = q_x;     Q_full_(1,1) = q_y;     Q_full_(2,2) = q_theta;
-        Q_full_(3,3) = q_vx;    Q_full_(4,4) = q_vy;    Q_full_(5,5) = q_omega;
 
         // Q — Messrauschen Landmark
         Q_lm_(0,0) = q_lm_r;   Q_lm_(1,1) = q_lm_phi;
@@ -155,52 +150,46 @@ public:
     }
 
     // -----------------------------------------------------------------------
-    // CORRECTION — Full  z = [x_map, y_map, theta_map, vx_world, vy_world, omega]
+    // CORRECTION — Full  z = [x_map, y_map, theta_map]
     //
     // Aus odom:
     //   x_map/y_map/theta_map  = odom.pose  (nach Offset-Transform)
-    //   vx_world = v * cos(theta_current)
-    //   vy_world = v * sin(theta_current)
-    //   omega    = odom.twist.angular.z
     //
-    // h(x) = x  →  C = I6  →  linear, kein Jacobian nötig
+    // h(x) = [x, y, theta]  →  C = [I3 | 0]  (3x6)  →  linear, kein Jacobian nötig
     // -----------------------------------------------------------------------
-    Vector6d correctFull(const Vector6d & z)
+    Vector6d correctFull(const Eigen::Vector3d & z)
     {
-        // C — Messmatrix (6x6) = Identität
+        // C — Messmatrix (3x6) = [I3 | 0]
         //
         //         x    y   theta   vx   vy  omega
         //   x  [  1    0     0      0    0    0  ]
         //   y  [  0    1     0      0    0    0  ]
         // theta [  0    0     1      0    0    0  ]
-        //  vx  [  0    0     0      1    0    0  ]
-        //  vy  [  0    0     0      0    1    0  ]
-        // omega [  0    0     0      0    0    1  ]
-        const Matrix6d C = Matrix6d::Identity();
+        Matrix3x6d C = Matrix3x6d::Zero();
+        C(0,0) = 1.0;
+        C(1,1) = 1.0;
+        C(2,2) = 1.0;
 
         // =====================
         // KALMAN-GAIN
         // =====================
 
         // Step 3: Compute Kalman Gain  [Line 4: K = Sigma_bar * C^T * (C * Sigma_bar * C^T + Q)^-1]
-        // Mit C = I vereinfacht sich das zu: K = Sigma_bar * (Sigma_bar + Q)^-1
-        Matrix6d S = Sigma_bar_ + Q_full_;
-        K_full_ = Sigma_bar_ * S.inverse();
+        Matrix3d S = C * Sigma_bar_ * C.transpose() + Q_full_;
+        K_full_ = Sigma_bar_ * C.transpose() * S.inverse();
 
         // =====================
         // CORRECT
         // =====================
 
         // Step 4: Correct mean  [Line 5: mu = mu_bar + K * (z - C * mu_bar)]
-        // Mit C = I: mu = mu_bar + K * (z - mu_bar)
-        Vector6d innovation = z - mu_bar_;
+        Eigen::Vector3d innovation = z - C * mu_bar_;
         innovation(2) = correctAngle(innovation(2));
         mu_ = mu_bar_ + K_full_ * innovation;
         mu_(2) = correctAngle(mu_(2));
 
         // Step 5: Correct covariance  [Line 6: Sigma = (I - K * C) * Sigma_bar]
-        // Mit C = I: Sigma = (I - K) * Sigma_bar
-        Sigma_ = (Matrix6d::Identity() - K_full_) * Sigma_bar_;
+        Sigma_ = (Matrix6d::Identity() - K_full_ * C) * Sigma_bar_;
 
         return mu_;
     }
@@ -261,7 +250,7 @@ public:
     const Vector6d & predictedState()      const { return mu_bar_; }
     const Matrix6d & covariance()          const { return Sigma_; }
     const Matrix6d & predictedCovariance() const { return Sigma_bar_; }
-    const Matrix6d & kalmanGainFull()      const { return K_full_; }
+    const Matrix6x3d & kalmanGainFull()    const { return K_full_; }
     const Matrix6x2d & kalmanGainLandmark() const { return K_lm_; }
 
 private:
@@ -275,9 +264,9 @@ private:
 
     Matrix6d        A_;
     Matrix6d        R_;
-    Matrix6d        Q_full_;
+    Matrix3d        Q_full_;
     Eigen::Matrix2d Q_lm_;
 
-    Matrix6d   K_full_;
+    Matrix6x3d K_full_;
     Matrix6x2d K_lm_;
 };

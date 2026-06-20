@@ -13,13 +13,13 @@
 // Control: u = [v, omega]                      (2x1)
 //
 // Weighting Full (Odom):
-//   z = [x_map, y_map, theta_map, vx_world, vy_world, omega]
-//   Fehler pro Partikel über alle 6 Komponenten:
+//   z = [x_map, y_map, theta_map]
+//   Fehler pro Partikel nur über x, y, theta:
 //   w_i ∝ exp(-0.5 * sum(err_k² / Q_k))
 //
 // Rauschen:
 //   R      — Bewegungsrauschen  (6x6, Diagonale)
-//   Q_full — Messrauschen Full  (6x6, Diagonale)
+//   Q_full — Messrauschen Full  (3x3, Diagonale)
 //   Q_lm   — Messrauschen Landmark (2x2)
 // ============================================================================
 
@@ -53,22 +53,16 @@ public:
         R_(4,4) = 0.05;
         R_(5,5) = 0.05;
 
-        // Q_full — Messrauschen Full (6x6) — Diagonalmatrix
+        // Q_full — Messrauschen Full (3x3) — Diagonalmatrix
         //
-        //         x       y     theta    vx      vy    omega
-        //   x  [ 0.05     0      0       0       0      0   ]
-        //   y  [  0     0.05     0       0       0      0   ]
-        // theta [  0       0    0.02     0       0      0   ]
-        //  vx  [  0       0      0      0.05     0      0   ]
-        //  vy  [  0       0      0       0      0.05    0   ]
-        // omega [  0       0      0       0       0     0.03 ]
-        Q_full_ = Eigen::Matrix<double, 6, 6>::Zero();
+        //         x       y     theta
+        //   x  [ 0.05     0      0   ]
+        //   y  [  0     0.05     0   ]
+        // theta [  0       0    0.02 ]
+        Q_full_ = Eigen::Matrix3d::Zero();
         Q_full_(0,0) = 0.05;
         Q_full_(1,1) = 0.05;
         Q_full_(2,2) = 0.02;
-        Q_full_(3,3) = 0.05;
-        Q_full_(4,4) = 0.05;
-        Q_full_(5,5) = 0.03;
 
         // Q_lm — Messrauschen Landmark (2x2) — Diagonalmatrix
         //
@@ -90,16 +84,14 @@ public:
         double r_x,    double r_y,    double r_theta,
         double r_vx,   double r_vy,   double r_omega,
         double q_x,    double q_y,    double q_theta,
-        double q_vx,   double q_vy,   double q_omega,
         double q_lm_r, double q_lm_phi)
     {
         // R — Bewegungsrauschen
         R_(0,0) = r_x;    R_(1,1) = r_y;    R_(2,2) = r_theta;
         R_(3,3) = r_vx;   R_(4,4) = r_vy;   R_(5,5) = r_omega;
 
-        // Q — Messrauschen Full
+        // Q — Messrauschen Full (nur x, y, theta — aus odom.pose)
         Q_full_(0,0) = q_x;    Q_full_(1,1) = q_y;    Q_full_(2,2) = q_theta;
-        Q_full_(3,3) = q_vx;   Q_full_(4,4) = q_vy;   Q_full_(5,5) = q_omega;
 
         // Q — Messrauschen Landmark
         Q_lm_(0,0) = q_lm_r;   Q_lm_(1,1) = q_lm_phi;
@@ -156,7 +148,7 @@ public:
     // -----------------------------------------------------------------------
     // PREDICTION + WEIGHTING + RESAMPLING
     // -----------------------------------------------------------------------
-    Vector6d update(const Eigen::Vector2d & u, const Vector6d & z_full, double dt)
+    Vector6d update(const Eigen::Vector2d & u, const Eigen::Vector3d & z_full, double dt)
     {
         predict(u, dt);
         computeWeightsFull(z_full);
@@ -237,10 +229,10 @@ private:
 
     // -----------------------------------------------------------------------
     // WEIGHTING — Full
-    // Vergleich Partikel [x, y, theta, vx, vy, omega] mit z_full
+    // Vergleich Partikel [x, y, theta] mit z_full
     // w_i ∝ exp(-0.5 * sum(err_k² / Q_k))
     // -----------------------------------------------------------------------
-    void computeWeightsFull(const Vector6d & z_full)
+    void computeWeightsFull(const Eigen::Vector3d & z_full)
     {
         // =====================
         // WEIGHTING
@@ -249,16 +241,13 @@ private:
         double ws = 0.0;
 
         for (int i = 0; i < num_particles_; ++i) {
-            Vector6d err = particles_[i] - z_full;
+            Eigen::Vector3d err = particles_[i].head<3>() - z_full;
             err(2) = correctAngle(err(2));  // theta wrappen
 
             double exp_val = -0.5 * (
                 err(0)*err(0) / Q_full_(0,0) +
                 err(1)*err(1) / Q_full_(1,1) +
-                err(2)*err(2) / Q_full_(2,2) +
-                err(3)*err(3) / Q_full_(3,3) +
-                err(4)*err(4) / Q_full_(4,4) +
-                err(5)*err(5) / Q_full_(5,5));
+                err(2)*err(2) / Q_full_(2,2));
 
             weights_[i] = std::exp(exp_val) + 1e-300;
             ws += weights_[i];
@@ -350,7 +339,7 @@ private:
     Vector6d mu_bar_ = Vector6d::Zero();
 
     Eigen::Matrix<double, 6, 6> R_;
-    Eigen::Matrix<double, 6, 6> Q_full_;
+    Eigen::Matrix3d             Q_full_;
     Eigen::Matrix2d             Q_lm_;
 
     std::mt19937 random_generator_;

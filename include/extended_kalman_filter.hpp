@@ -10,21 +10,10 @@
 // Control: u = [v, omega]                      (2x1)
 //
 // Correction Full (Odom):
-//   z = [x_map, y_map, theta_map, vx_world, vy_world, omega]
+//   z = [x_map, y_map, theta_map]
 //
-//   h(x) ist teilweise nichtlinear:
-//     x, y, theta, omega  →  linear
-//     vx_world = v*cos(theta), vy_world = v*sin(theta)  →  nichtlinear in theta!
-//
-//   → EKF braucht Jacobian H (6x6):
-//
-//         x    y      theta          vx   vy  omega
-//   x  [  1    0        0             0    0    0  ]
-//   y  [  0    1        0             0    0    0  ]
-// theta [  0    0        1             0    0    0  ]
-//  vx  [  0    0   -v*sin(θ)          1    0    0  ]
-//  vy  [  0    0    v*cos(θ)          0    1    0  ]
-// omega [  0    0        0             0    0    1  ]
+//   h(x) = [x, y, theta]  →  linear  →  H = [I3 | 0]  (3x6)
+//   (kein Jacobian nötig, da die Odom-Messung nur noch Pose enthält)
 //
 // Correction Landmark:
 //   z_lm = [r, phi]  — nichtlinear, voller Jacobian H (2x6)
@@ -34,6 +23,9 @@ using Vector6d   = Eigen::Matrix<double, 6, 1>;
 using Matrix6d   = Eigen::Matrix<double, 6, 6>;
 using Matrix6x2d = Eigen::Matrix<double, 6, 2>;
 using Matrix2x6d = Eigen::Matrix<double, 2, 6>;
+using Matrix3x6d = Eigen::Matrix<double, 3, 6>;
+using Matrix6x3d = Eigen::Matrix<double, 6, 3>;
+using Matrix3d   = Eigen::Matrix<double, 3, 3>;
 
 class ExtendedKalmanFilter
 {
@@ -73,16 +65,13 @@ public:
         // omega [  0     0     0      0     0  r_omega]
         R_ = Matrix6d::Zero();
 
-        // Q_full — Messrauschen Full Correction (6x6) — wird per setNoiseParams befüllt
+        // Q_full — Messrauschen Full Correction (3x3) — wird per setNoiseParams befüllt
         //
-        //         x       y     theta    vx      vy    omega
-        //   x  [ q_x      0      0       0       0      0   ]
-        //   y  [  0      q_y     0       0       0      0   ]
-        // theta [  0       0   q_theta   0       0      0   ]
-        //  vx  [  0       0      0      q_vx     0      0   ]
-        //  vy  [  0       0      0       0      q_vy    0   ]
-        // omega [  0       0      0       0       0   q_omega]
-        Q_full_ = Matrix6d::Zero();
+        //         x       y     theta
+        //   x  [ q_x      0      0   ]
+        //   y  [  0      q_y     0   ]
+        // theta [  0       0   q_theta]
+        Q_full_ = Matrix3d::Zero();
 
         // Q_lm — Messrauschen Landmark (2x2) — wird per setNoiseParams befüllt
         //
@@ -92,7 +81,7 @@ public:
         Q_lm_ = Eigen::Matrix2d::Zero();
 
         G_      = Matrix6d::Identity();
-        K_full_ = Matrix6d::Zero();
+        K_full_ = Matrix6x3d::Zero();
         K_lm_   = Matrix6x2d::Zero();
     }
 
@@ -109,14 +98,13 @@ public:
         double r_x,     double r_y,     double r_theta,
         double r_vx,    double r_vy,    double r_omega,
         double q_x,     double q_y,     double q_theta,
-        double q_vx,    double q_vy,    double q_omega,
         double q_lm_r,  double q_lm_phi)
     {
         R_(0,0) = r_x;    R_(1,1) = r_y;    R_(2,2) = r_theta;
         R_(3,3) = r_vx;   R_(4,4) = r_vy;   R_(5,5) = r_omega;
 
+        // Q — Messrauschen Full (nur x, y, theta — aus odom.pose)
         Q_full_(0,0) = q_x;     Q_full_(1,1) = q_y;     Q_full_(2,2) = q_theta;
-        Q_full_(3,3) = q_vx;    Q_full_(4,4) = q_vy;    Q_full_(5,5) = q_omega;
 
         Q_lm_(0,0) = q_lm_r;   Q_lm_(1,1) = q_lm_phi;
     }
@@ -164,53 +152,36 @@ public:
     }
 
     // -----------------------------------------------------------------------
-    // CORRECTION — Full  z = [x_map, y_map, theta_map, vx_world, vy_world, omega]
+    // CORRECTION — Full  z = [x_map, y_map, theta_map]
     //
-    // h(x) teilweise nichtlinear → Jacobian H:
-    //   x, y, theta, omega  →  linear  (H = I für diese Zeilen)
-    //   vx = v*cos(theta), vy = v*sin(theta)  →  nichtlinear in theta
+    // h(x) = [x, y, theta]  →  jetzt rein LINEAR (kein Jacobian-Term nötig,
+    // da die nichtlinearen vx/vy-Anteile nicht mehr Teil der Messung sind)
     // -----------------------------------------------------------------------
-    Vector6d correctFull(const Vector6d & z)
+    Vector6d correctFull(const Eigen::Vector3d & z)
     {
-        const double theta = mu_bar_(2);
-        const double vx    = mu_bar_(3);
-        const double vy    = mu_bar_(4);
-        const double v     = std::sqrt(vx*vx + vy*vy);
-
         // h(mu_bar) — erwartete Messung
-        Vector6d z_hat;
+        Eigen::Vector3d z_hat;
         z_hat(0) = mu_bar_(0);             // x
         z_hat(1) = mu_bar_(1);             // y
         z_hat(2) = mu_bar_(2);             // theta
-        z_hat(3) = v * std::cos(theta);   // vx_world
-        z_hat(4) = v * std::sin(theta);   // vy_world
-        z_hat(5) = mu_bar_(5);            // omega
 
-        // H — Jacobian (6x6)
+        // H — Jacobian (3x6) = [I3 | 0]
         //
-        //         x    y      theta          vx   vy  omega
-        //   x  [  1    0        0             0    0    0  ]
-        //   y  [  0    1        0             0    0    0  ]
-        // theta [  0    0        1             0    0    0  ]
-        //  vx  [  0    0   -v*sin(θ)          1    0    0  ]
-        //  vy  [  0    0    v*cos(θ)          0    1    0  ]
-        // omega [  0    0        0             0    0    1  ]
-        Matrix6d H = Matrix6d::Zero();
+        //         x    y   theta   vx   vy  omega
+        //   x  [  1    0     0      0    0    0  ]
+        //   y  [  0    1     0      0    0    0  ]
+        // theta [  0    0     1      0    0    0  ]
+        Matrix3x6d H = Matrix3x6d::Zero();
         H(0,0) = 1.0;
         H(1,1) = 1.0;
         H(2,2) = 1.0;
-        H(3,2) = -v * std::sin(theta);   // dvx/dtheta
-        H(3,3) = 1.0;
-        H(4,2) =  v * std::cos(theta);   // dvy/dtheta
-        H(4,4) = 1.0;
-        H(5,5) = 1.0;
 
         // =====================
         // KALMAN-GAIN
         // =====================
 
         // Step 3: K = Sigma_bar * H^T * (H * Sigma_bar * H^T + Q)^-1
-        Matrix6d S = H * Sigma_bar_ * H.transpose() + Q_full_;
+        Matrix3d S = H * Sigma_bar_ * H.transpose() + Q_full_;
         K_full_ = Sigma_bar_ * H.transpose() * S.inverse();
 
         // =====================
@@ -218,7 +189,7 @@ public:
         // =====================
 
         // Step 4: mu = mu_bar + K * (z - h(mu_bar))
-        Vector6d innovation = z - z_hat;
+        Eigen::Vector3d innovation = z - z_hat;
         innovation(2) = correctAngle(innovation(2));
         mu_ = mu_bar_ + K_full_ * innovation;
         mu_(2) = correctAngle(mu_(2));
@@ -289,7 +260,7 @@ public:
     const Matrix6d   & covariance()          const { return Sigma_; }
     const Matrix6d   & predictedCovariance() const { return Sigma_bar_; }
     const Matrix6d   & jacobianG()           const { return G_; }
-    const Matrix6d   & kalmanGainFull()      const { return K_full_; }
+    const Matrix6x3d & kalmanGainFull()      const { return K_full_; }
     const Matrix6x2d & kalmanGainLandmark()  const { return K_lm_; }
 
 private:
@@ -303,9 +274,9 @@ private:
 
     Matrix6d        G_;
     Matrix6d        R_;
-    Matrix6d        Q_full_;
+    Matrix3d        Q_full_;
     Eigen::Matrix2d Q_lm_;
 
-    Matrix6d   K_full_;
+    Matrix6x3d K_full_;
     Matrix6x2d K_lm_;
 };

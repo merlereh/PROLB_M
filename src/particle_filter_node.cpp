@@ -1,6 +1,7 @@
 #include <memory>
 #include <string>
 #include <cmath>
+#include <random>
 
 #include "rclcpp/rclcpp.hpp"
 #include "message_filters/subscriber.h"
@@ -29,7 +30,7 @@ static constexpr double LANDMARK_Y = 0.0;
 //
 // Trigger:  /odom + /scan     → Synchronizer (ApproximateTime, max 0.1s)
 // Input:    /cmd_vel          → Control u = [v, omega] (gecacht, max. 0.2s alt)
-//           /odom             → z = [x_map, y_map, theta_map, vx_world, vy_world, omega]
+//           /odom             → z = [x_map, y_map, theta_map]
 //           /scan             → Laser für Landmark
 //           /initialpose      → Partikel um Startpose initialisieren
 // Output:   /pf_pose          → geschätzte Pose als PoseWithCovarianceStamped
@@ -55,12 +56,17 @@ public:
     this->declare_parameter("q_x",                 0.10);
     this->declare_parameter("q_y",                 0.10);
     this->declare_parameter("q_theta",             0.05);
-    this->declare_parameter("q_vx",                0.10);
-    this->declare_parameter("q_vy",                0.10);
-    this->declare_parameter("q_omega",             0.05);
     this->declare_parameter("q_lm_r",              0.05);
     this->declare_parameter("q_lm_phi",            0.01);
     this->declare_parameter("pf_threshold_factor", 0.5);
+
+    // --- ROS-Parameter für künstliches Odom-Rauschen (Standardabweichung) ---
+    this->declare_parameter("odom_noise_x",     0.05);
+    this->declare_parameter("odom_noise_y",     0.05);
+    this->declare_parameter("odom_noise_theta", 0.02);
+    odom_noise_x_     = this->get_parameter("odom_noise_x").as_double();
+    odom_noise_y_     = this->get_parameter("odom_noise_y").as_double();
+    odom_noise_theta_ = this->get_parameter("odom_noise_theta").as_double();
 
     // --- Filter mit Parametern initialisieren ---
     filter_.setNoiseParams(
@@ -73,9 +79,6 @@ public:
       this->get_parameter("q_x").as_double(),
       this->get_parameter("q_y").as_double(),
       this->get_parameter("q_theta").as_double(),
-      this->get_parameter("q_vx").as_double(),
-      this->get_parameter("q_vy").as_double(),
-      this->get_parameter("q_omega").as_double(),
       this->get_parameter("q_lm_r").as_double(),
       this->get_parameter("q_lm_phi").as_double());
 
@@ -144,9 +147,9 @@ private:
 
     rclcpp::Time current_time = odom_msg->header.stamp;
 
-    const double x_odom     = odom_msg->pose.pose.position.x;
-    const double y_odom     = odom_msg->pose.pose.position.y;
-    const double theta_odom = getYaw(odom_msg->pose.pose.orientation);
+    const double x_odom     = odom_msg->pose.pose.position.x     + noiseX();
+    const double y_odom     = odom_msg->pose.pose.position.y     + noiseY();
+    const double theta_odom = correctAngle(getYaw(odom_msg->pose.pose.orientation) + noiseTheta());
 
     // --- Einmalig: Offset odom → map berechnen ---
     if (!odom_initialized_) {
@@ -167,23 +170,16 @@ private:
     last_time_ = current_time;
     if (dt <= 0.0 || dt > 1.0) return;
 
-    // --- z = [x_map, y_map, theta_map, vx_world, vy_world, omega] ---
+    // --- z = [x_map, y_map, theta_map] ---
     const double co = std::cos(offset_theta_), so = std::sin(offset_theta_);
     const double x_map     = co * x_odom - so * y_odom + offset_x_;
     const double y_map     = so * x_odom + co * y_odom + offset_y_;
     const double theta_map = correctAngle(theta_odom + offset_theta_);
 
-    const double v_odom     = odom_msg->twist.twist.linear.x;
-    const double omega_odom = odom_msg->twist.twist.angular.z;
-    const double theta_cur  = filter_.state()(2);
-
-    Vector6d z_full;
+    Eigen::Vector3d z_full;
     z_full(0) = x_map;
     z_full(1) = y_map;
     z_full(2) = theta_map;
-    z_full(3) = v_odom * std::cos(theta_cur);   // vx_world
-    z_full(4) = v_odom * std::sin(theta_cur);   // vy_world
-    z_full(5) = omega_odom;                      // omega
 
     // --- 1) PF Predict + Weight (Full) + Resample ---
     Eigen::Vector2d u;
@@ -209,6 +205,11 @@ private:
 
   static double correctAngle(double a)
   { return std::atan2(std::sin(a), std::cos(a)); }
+
+  // --- Künstliches Gaussian-Rauschen auf die Odom-Pose ---
+  double noiseX()     { return std::normal_distribution<double>(0.0, odom_noise_x_)(rng_); }
+  double noiseY()     { return std::normal_distribution<double>(0.0, odom_noise_y_)(rng_); }
+  double noiseTheta() { return std::normal_distribution<double>(0.0, odom_noise_theta_)(rng_); }
 
   double getYaw(const geometry_msgs::msg::Quaternion & q_msg)
   {
@@ -274,6 +275,10 @@ private:
   double last_v_{0.0}, last_omega_{0.0};
   rclcpp::Time last_cmd_time_, last_time_;
   bool has_cmd_vel_{false}, initialized_{false}, odom_initialized_{false};
+
+  // --- Künstliches Odom-Rauschen ---
+  double odom_noise_x_{0.0}, odom_noise_y_{0.0}, odom_noise_theta_{0.0};
+  std::mt19937 rng_{std::random_device{}()};
 };
 
 int main(int argc, char * argv[])
