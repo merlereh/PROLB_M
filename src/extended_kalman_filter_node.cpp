@@ -2,6 +2,7 @@
 #include <string>
 #include <cmath>
 #include <random>
+#include <chrono>
 
 #include "rclcpp/rclcpp.hpp"
 #include "message_filters/subscriber.h"
@@ -173,6 +174,9 @@ private:
     // --- 1) EKF Predict ---
     Eigen::Vector2d u;
     u << last_v_, last_omega_;
+
+    const auto t_start = std::chrono::steady_clock::now();
+
     filter_.predict(u, dt);
 
     // --- 2) EKF Correct: x, y, theta aus Odom ---
@@ -191,8 +195,12 @@ private:
         r_meas, phi_meas, estimate(0), estimate(1));
     }
 
+    const auto t_end = std::chrono::steady_clock::now();
+    const double runtime_ms =
+      std::chrono::duration<double, std::milli>(t_end - t_start).count();
+
     // --- 4) Pose publizieren ---
-    publishPose(estimate, odom_msg->header.stamp, "map");
+    publishPose(estimate, odom_msg->header.stamp, "map", runtime_ms);
   }
 
   static double correctAngle(double a)
@@ -209,7 +217,7 @@ private:
     double r, p, y; tf2::Matrix3x3(q).getRPY(r, p, y); return y;
   }
 
-  void publishPose(const Vector6d & s, const rclcpp::Time & stamp, const std::string & fid)
+  void publishPose(const Vector6d & s, const rclcpp::Time & stamp, const std::string & fid, double runtime_ms)
   {
     geometry_msgs::msg::PoseWithCovarianceStamped msg;
     msg.header.stamp    = stamp;
@@ -225,6 +233,11 @@ private:
     msg.pose.covariance[35] = cov(2,2);
     msg.pose.covariance[1]  = cov(0,1);
     msg.pose.covariance[6]  = cov(1,0);
+
+    // Ungenutzter z-z-Slot (Index 14) für die Update-Laufzeit zweckentfremdet
+    // — siehe Kommentar in particle_filter_node.cpp für die Begründung.
+    msg.pose.covariance[14] = runtime_ms;
+
     pose_pub_->publish(msg);
   }
 

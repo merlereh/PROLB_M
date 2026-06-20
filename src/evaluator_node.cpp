@@ -2,6 +2,7 @@
 #include <fstream>
 #include <string>
 #include <cmath>
+#include <limits>
 
 #include "rclcpp/rclcpp.hpp"
 
@@ -18,13 +19,23 @@
 #include "tf2/utils.h"
 
 // CSV columns:
-//   time, source, frame, x, y, theta, cov_xx, cov_yy, cov_xy
+//   time, source, frame, x, y, theta, cov_xx, cov_yy, cov_xy,
+//   runtime_ms, ess, resampling_triggered
 //
 // cov_xx / cov_yy / cov_xy come straight from the PoseWithCovarianceStamped
 // message (covariance[0], covariance[7], covariance[1]).
 // For /odom and /amcl the same fields are used.
 // The PF node already publishes these (filled from particle spread),
 // KF and EKF fill them from their Sigma matrix.
+//
+// runtime_ms / ess / resampling_triggered are piggy-backed on otherwise
+// unused diagonal slots of the same 6x6 covariance array (z/roll/pitch,
+// indices 14/21/28 — always 0 for a 2D robot), since PoseWithCovarianceStamped
+// has no dedicated fields for these and a custom .msg wasn't worth the
+// rebuild effort. kf/ekf/pf fill covariance[14] with their update runtime;
+// pf additionally fills covariance[21] (ESS) and covariance[28]
+// (resampling_triggered, 1.0/0.0). odom and amcl don't apply, so those
+// columns stay empty (NaN) for them.
 
 class EvaluatorNode : public rclcpp::Node
 {
@@ -36,8 +47,8 @@ public:
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     file_.open("trajectory_log.csv");
-    // Header — cov_xx / cov_yy / cov_xy added
-    file_ << "time,source,frame,x,y,theta,cov_xx,cov_yy,cov_xy\n";
+    // Header — cov_xx / cov_yy / cov_xy / runtime_ms / ess / resampling_triggered added
+    file_ << "time,source,frame,x,y,theta,cov_xx,cov_yy,cov_xy,runtime_ms,ess,resampling_triggered\n";
 
     // ── /odom ────────────────────────────────────────────────────────────────
     odom_subscription_ =
@@ -61,7 +72,8 @@ public:
             msg->header.frame_id, msg->pose.pose,
             msg->pose.covariance[0],   // cov_xx
             msg->pose.covariance[7],   // cov_yy
-            msg->pose.covariance[1]);  // cov_xy
+            msg->pose.covariance[1],   // cov_xy
+            msg->pose.covariance[14]); // runtime_ms
         });
 
     // ── /ekf_pose ────────────────────────────────────────────────────────────
@@ -74,7 +86,8 @@ public:
             msg->header.frame_id, msg->pose.pose,
             msg->pose.covariance[0],
             msg->pose.covariance[7],
-            msg->pose.covariance[1]);
+            msg->pose.covariance[1],
+            msg->pose.covariance[14]); // runtime_ms
         });
 
     // ── /pf_pose ─────────────────────────────────────────────────────────────
@@ -87,7 +100,10 @@ public:
             msg->header.frame_id, msg->pose.pose,
             msg->pose.covariance[0],
             msg->pose.covariance[7],
-            msg->pose.covariance[1]);
+            msg->pose.covariance[1],
+            msg->pose.covariance[14],   // runtime_ms
+            msg->pose.covariance[21],   // ess
+            msg->pose.covariance[28]);  // resampling_triggered
         });
 
     // ── /amcl_pose ───────────────────────────────────────────────────────────
@@ -118,7 +134,8 @@ public:
 
     RCLCPP_INFO(this->get_logger(), "Evaluator node started.");
     RCLCPP_INFO(this->get_logger(),
-      "Writing trajectory_log.csv (x, y, theta, cov_xx, cov_yy, cov_xy) in map frame.");
+      "Writing trajectory_log.csv (x, y, theta, cov_xx, cov_yy, cov_xy, "
+      "runtime_ms, ess, resampling_triggered) in map frame.");
   }
 
   ~EvaluatorNode()
@@ -135,7 +152,10 @@ private:
     const std::string  & source,
     const std::string  & frame_id,
     const geometry_msgs::msg::Pose & pose,
-    double cov_xx, double cov_yy, double cov_xy)
+    double cov_xx, double cov_yy, double cov_xy,
+    double runtime_ms = std::numeric_limits<double>::quiet_NaN(),
+    double ess = std::numeric_limits<double>::quiet_NaN(),
+    double resampling_triggered = std::numeric_limits<double>::quiet_NaN())
   {
     geometry_msgs::msg::PoseStamped input_pose;
     input_pose.header.stamp    = stamp;
@@ -167,7 +187,18 @@ private:
           << theta  << ","
           << cov_xx << ","
           << cov_yy << ","
-          << cov_xy << "\n";
+          << cov_xy << ",";
+
+    // NaN (= "nicht zutreffend für diese Quelle") als leeres Feld schreiben,
+    // damit pandas es beim Einlesen automatisch als NaN interpretiert.
+    auto writeOptional = [this](double v) {
+      if (std::isnan(v)) { file_ << ""; }
+      else                { file_ << v; }
+    };
+    writeOptional(runtime_ms); file_ << ",";
+    writeOptional(ess);        file_ << ",";
+    writeOptional(resampling_triggered);
+    file_ << "\n";
 
     file_.flush();
   }

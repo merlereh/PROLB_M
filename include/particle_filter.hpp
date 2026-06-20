@@ -200,6 +200,10 @@ public:
     const std::vector<Vector6d>& particles()  const { return particles_; }
     const std::vector<double>  & weights()    const { return weights_; }
 
+    // --- Evaluations-Metriken (letzter update()/updateLandmark()-Aufruf) ---
+    double ess() const { return last_ess_; }
+    bool   resamplingTriggered() const { return last_resampling_triggered_; }
+
 private:
     static double correctAngle(double a)
     { return std::atan2(std::sin(a), std::cos(a)); }
@@ -225,6 +229,19 @@ private:
     {
         if (ws > 0.0) { for (auto & w : weights_) w /= ws; }
         else          { for (auto & w : weights_) w  = 1.0 / num_particles_; }
+    }
+
+    // -----------------------------------------------------------------------
+    // EFFECTIVE SAMPLE SIZE
+    //   ESS = 1 / sum(w_i^2)   für normalisierte Gewichte (sum(w_i) = 1)
+    //   ESS == N        -> alle Partikel gleich gut (keine Degeneration)
+    //   ESS -> 1         -> fast alles Gewicht auf einem einzigen Partikel
+    // -----------------------------------------------------------------------
+    double computeESS() const
+    {
+        double sum_sq = 0.0;
+        for (double w : weights_) sum_sq += w * w;
+        return (sum_sq > 0.0) ? (1.0 / sum_sq) : 0.0;
     }
 
     // -----------------------------------------------------------------------
@@ -254,6 +271,7 @@ private:
         }
 
         normalizeWeights(ws);
+        last_ess_ = computeESS();
     }
 
     // -----------------------------------------------------------------------
@@ -289,6 +307,7 @@ private:
         }
 
         normalizeWeights(ws);
+        last_ess_ = computeESS();
     }
 
     // -----------------------------------------------------------------------
@@ -312,6 +331,11 @@ private:
             good.resize(num_particles_);
             std::iota(good.begin(), good.end(), 0);
         }
+
+        // "Triggered" heißt hier: der Threshold hat tatsächlich Partikel
+        // ausgesiebt (good < N). Bei good == N wurde nur uniform aus dem
+        // vollen Satz resampled, d.h. de facto kein Pruning passiert.
+        last_resampling_triggered_ = (good.size() < static_cast<std::size_t>(num_particles_));
 
         std::vector<double> gw;
         gw.reserve(good.size());
@@ -341,6 +365,9 @@ private:
     Eigen::Matrix<double, 6, 6> R_;
     Eigen::Matrix3d             Q_full_;
     Eigen::Matrix2d             Q_lm_;
+
+    double last_ess_ = 0.0;
+    bool   last_resampling_triggered_ = false;
 
     std::mt19937 random_generator_;
 };

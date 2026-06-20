@@ -2,6 +2,7 @@
 #include <string>
 #include <cmath>
 #include <random>
+#include <chrono>
 
 #include "rclcpp/rclcpp.hpp"
 #include "message_filters/subscriber.h"
@@ -184,6 +185,9 @@ private:
     // --- 1) PF Predict + Weight (Full) + Resample ---
     Eigen::Vector2d u;
     u << last_v_, last_omega_;
+
+    const auto t_start = std::chrono::steady_clock::now();
+
     Vector6d estimate = filter_.update(u, z_full, dt);
 
     // --- 2) PF Landmark Update ---
@@ -199,8 +203,12 @@ private:
         r_meas, phi_meas, estimate(0), estimate(1));
     }
 
+    const auto t_end = std::chrono::steady_clock::now();
+    const double runtime_ms =
+      std::chrono::duration<double, std::milli>(t_end - t_start).count();
+
     // --- 3) Pose + Partikel publizieren ---
-    publishPose(estimate, odom_msg->header.stamp, "map");
+    publishPose(estimate, odom_msg->header.stamp, "map", runtime_ms);
   }
 
   static double correctAngle(double a)
@@ -217,7 +225,7 @@ private:
     double r, p, y; tf2::Matrix3x3(q).getRPY(r, p, y); return y;
   }
 
-  void publishPose(const Vector6d & s, const rclcpp::Time & stamp, const std::string & fid)
+  void publishPose(const Vector6d & s, const rclcpp::Time & stamp, const std::string & fid, double runtime_ms)
   {
     geometry_msgs::msg::PoseWithCovarianceStamped msg;
     msg.header.stamp    = stamp;
@@ -243,6 +251,18 @@ private:
       msg.pose.covariance[1] = cxy/n;
       msg.pose.covariance[6] = cxy/n;
     }
+
+    // PoseWithCovarianceStamped hat keine Felder für Evaluations-Metriken.
+    // Statt eines eigenen .msg-Typs (Rebuild der Interfaces nötig) werden
+    // ungenutzte Diagonal-Slots der 6x6-Kovarianz zweckentfremdet — bei
+    // einem 2D-Roboter sind z/roll/pitch-Varianz (Indizes 14/21/28) ohnehin
+    // immer 0 und kollidieren nicht mit x/y/theta (Indizes 0,1,6,7,35).
+    //   covariance[14] (z-z)       -> runtime_ms (Dauer dieses Update-Schritts)
+    //   covariance[21] (roll-roll) -> ess (Effective Sample Size)
+    //   covariance[28] (pitch-pitch) -> resampling_triggered (1.0/0.0)
+    msg.pose.covariance[14] = runtime_ms;
+    msg.pose.covariance[21] = filter_.ess();
+    msg.pose.covariance[28] = filter_.resamplingTriggered() ? 1.0 : 0.0;
 
     pose_pub_->publish(msg);
 

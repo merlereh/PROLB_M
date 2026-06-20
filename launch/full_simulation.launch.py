@@ -19,7 +19,7 @@ def generate_launch_description():
     params_file = PathJoinSubstitution([
         FindPackageShare('probl_m'),
         'config',
-        'filter_params.yaml'
+        'experiments/pf_resampling/threshold_t1.0/filter_params.yaml'
     ])
 
     nav2_simulation = IncludeLaunchDescription(
