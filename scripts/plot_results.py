@@ -1,7 +1,6 @@
 """
 python3 scripts/plot_results.py
-
-Welche Filter anzeigen? Einfach True/False setzen:
+Just for trying out the plotting functions.
 """
 
 SHOW_ODOM             = False
@@ -11,13 +10,9 @@ SHOW_PF               = True
 SHOW_AMCL             = True
 SHOW_EKF_PREDICT_ONLY = False
 
-# Ellipse alle N Posen zeichnen (0 = keine Ellipsen)
-# -> kleinerer Wert = mehr Ellipsen (dichter), größerer Wert = weniger (sparsamer)
 ELLIPSE_EVERY = 30
 N_STD         = 2.0   # 1-sigma, 2-sigma, ...
 
-# Landmark(s) einzeichnen — Koordinaten müssen zu LANDMARK_X/LANDMARK_Y in
-# kalman_filter_node.cpp / extended_kalman_filter_node.cpp / particle_filter_node.cpp passen
 SHOW_LANDMARKS = True
 LANDMARKS = [(1.8, 0.0)]   # Liste von (x, y), falls später mehr Landmarks dazukommen
 

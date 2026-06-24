@@ -25,15 +25,6 @@ Outputs (all in --out):
 import argparse
 
 import matplotlib.pyplot as plt
-plt.rcParams.update({
-    "font.size":             13,
-    "axes.titlesize":        15,
-    "axes.labelsize":        14,
-    "xtick.labelsize":       12,
-    "ytick.labelsize":       12,
-    "legend.fontsize":       12,
-    "legend.title_fontsize": 12,
-})
 import re
 from pathlib import Path
 

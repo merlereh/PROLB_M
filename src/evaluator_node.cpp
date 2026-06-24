@@ -22,19 +22,18 @@
 //   time, source, frame, x, y, theta, cov_xx, cov_yy, cov_xy,
 //   runtime_ms, ess, resampling_triggered
 //
-// cov_xx / cov_yy / cov_xy come straight from the PoseWithCovarianceStamped
-// message (covariance[0], covariance[7], covariance[1]).
-// For /odom and /amcl the same fields are used.
-// The PF node already publishes these (filled from particle spread),
-// KF and EKF fill them from their Sigma matrix.
+// cov_xx / cov_yy / cov_xy come straight from PoseWithCovarianceStamped
+// (covariance[0], covariance[7], covariance[1]).
+// KF and EKF fill these from their Sigma matrix; PF fills them from
+// the empirical particle spread.
 //
-// runtime_ms / ess / resampling_triggered are piggy-backed on otherwise
-// unused diagonal slots of the same 6x6 covariance array (z/roll/pitch,
+// runtime_ms / ess / resampling_triggered are piggy-backed onto otherwise
+// unused diagonal slots of the 6×6 covariance array (z/roll/pitch,
 // indices 14/21/28 — always 0 for a 2D robot), since PoseWithCovarianceStamped
 // has no dedicated fields for these and a custom .msg wasn't worth the
-// rebuild effort. kf/ekf/pf fill covariance[14] with their update runtime;
-// pf additionally fills covariance[21] (ESS) and covariance[28]
-// (resampling_triggered, 1.0/0.0). odom and amcl don't apply, so those
+// extra rebuild effort. kf/ekf/pf fill covariance[14] with their update
+// runtime; pf additionally fills covariance[21] (ESS) and covariance[28]
+// (resampling_triggered, 1.0/0.0). odom and amcl don't use these, so those
 // columns stay empty (NaN) for them.
 
 class EvaluatorNode : public rclcpp::Node
@@ -47,15 +46,15 @@ public:
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     file_.open("trajectory_log.csv");
-    // Header — cov_xx / cov_yy / cov_xy / runtime_ms / ess / resampling_triggered added
     file_ << "time,source,frame,x,y,theta,cov_xx,cov_yy,cov_xy,runtime_ms,ess,resampling_triggered\n";
 
     // ── /odom ────────────────────────────────────────────────────────────────
+    // Ground-truth proxy: raw odometry in the map frame.
     odom_subscription_ =
       this->create_subscription<nav_msgs::msg::Odometry>(
         "/odom", 10,
         [this](nav_msgs::msg::Odometry::UniquePtr msg) {
-          // odom has no filter covariance → write 0s
+          // Odometry has no filter covariance, so we write zeros for those columns.
           logPoseInMapFrame(
             msg->header.stamp, "odom",
             msg->header.frame_id, msg->pose.pose,
@@ -102,11 +101,12 @@ public:
             msg->pose.covariance[7],
             msg->pose.covariance[1],
             msg->pose.covariance[14],   // runtime_ms
-            msg->pose.covariance[21],   // ess
-            msg->pose.covariance[28]);  // resampling_triggered
+            msg->pose.covariance[21],   // ess (Effective Sample Size)
+            msg->pose.covariance[28]);  // resampling_triggered (1.0 / 0.0)
         });
 
     // ── /amcl_pose ───────────────────────────────────────────────────────────
+    // AMCL is the Nav2 built-in particle filter and serves as a reference.
     amcl_subscription_ =
       this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/amcl_pose", 10,
@@ -119,7 +119,9 @@ public:
             msg->pose.covariance[1]);
         });
 
-    // ── /ekf_pose_predicted (Sigma_bar_ — pre-correction) ────────────────────
+    // ── /ekf_predict_only_pose ───────────────────────────────────────────────
+    // Pre-correction (prediction-only) EKF state — useful for comparing
+    // the effect of the landmark correction in experiment 1.
     ekf_predict_only_sub_ =
       this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/ekf_predict_only_pose", 10,
@@ -144,9 +146,7 @@ public:
   }
 
 private:
-  // ---------------------------------------------------------------------------
-  // Transform pose to map frame, then write one CSV row
-  // ---------------------------------------------------------------------------
+  // Transform the pose into the map frame, then write one row to the CSV.
   void logPoseInMapFrame(
     const rclcpp::Time & stamp,
     const std::string  & source,
@@ -189,8 +189,8 @@ private:
           << cov_yy << ","
           << cov_xy << ",";
 
-    // NaN (= "nicht zutreffend für diese Quelle") als leeres Feld schreiben,
-    // damit pandas es beim Einlesen automatisch als NaN interpretiert.
+    // Write NaN values as empty fields so pandas reads them as NaN automatically,
+    // rather than as a literal "nan" string that might confuse downstream scripts.
     auto writeOptional = [this](double v) {
       if (std::isnan(v)) { file_ << ""; }
       else                { file_ << v; }
@@ -203,9 +203,7 @@ private:
     file_.flush();
   }
 
-  // ---------------------------------------------------------------------------
-  // Members
-  // ---------------------------------------------------------------------------
+  // ── Members ──────────────────────────────────────────────────────────────
   std::ofstream file_;
 
   std::unique_ptr<tf2_ros::Buffer>            tf_buffer_;
@@ -216,7 +214,8 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr ekf_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pf_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr amcl_subscription_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr ekf_predict_only_sub_;};
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr ekf_predict_only_sub_;
+};
 
 int main(int argc, char * argv[])
 {

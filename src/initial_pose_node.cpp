@@ -13,6 +13,22 @@ using namespace std::chrono_literals;
 using NavigateToPose = nav2_msgs::action::NavigateToPose;
 using GoalHandleNav  = rclcpp_action::ClientGoalHandle<NavigateToPose>;
 
+// ---------------------------------------------------------------------------
+// InitialPoseAndWaypointNode
+//
+// Two responsibilities combined into one node:
+//   1. Publish the robot's starting pose to /initialpose so the filter nodes
+//      and AMCL can initialize their state.
+//   2. Drive the robot through a fixed sequence of waypoints using Nav2's
+//      NavigateToPose action server, so the filters are exercised over the
+//      full environment without any manual driving.
+//
+// The tick() method runs every second and works through a simple state machine:
+//   a) Send /initialpose a few times (to make sure all subscribers catch it).
+//   b) Wait for Nav2's action server to become ready.
+//   c) Send waypoints one by one, waiting for each to complete before moving on.
+// ---------------------------------------------------------------------------
+
 class InitialPoseAndWaypointNode : public rclcpp::Node
 {
 public:
@@ -37,6 +53,7 @@ public:
 
   ~InitialPoseAndWaypointNode()
   {
+    // Cancel any active goal cleanly on shutdown so Nav2 doesn't get stuck.
     if (current_goal_handle_) {
       RCLCPP_INFO(this->get_logger(), "Cancelling active navigation goal ...");
       auto future = nav_client_->async_cancel_goal(current_goal_handle_);
@@ -46,7 +63,9 @@ public:
   }
 
 private:
-  // Waypoints: {x, y, yaw}
+  // Waypoints: {x, y, yaw} in the map frame.
+  // These trace a loop around the TurtleBot3 world so the robot passes
+  // near the landmark at (1.8, 0.0) several times during a run.
   const std::vector<std::array<double, 3>> waypoints_ = {
     { -2.0,  -0.5,   0.0  },
     { -0.5,  -0.5,   1.4  },
@@ -57,8 +76,8 @@ private:
     {  1.3,   1.6,   0.1  },
     {  1.7,   0.55, -3.14 },
     {  0.85,  0.5,  -1.5  },
-    {  0.56, -0.45, -1.86 },  
-    {  0.25, -0.61, -2.67 },  
+    {  0.56, -0.45, -1.86 },
+    {  0.25, -0.61, -2.67 },
     { -0.5,  -0.65, -1.7  },
     { -0.65, -1.6,  -3.14 },
     { -1.6,  -1.5,   2.2  },
@@ -67,7 +86,8 @@ private:
 
   void tick()
   {
-    // Pose mehrfach senden (5x alle 500ms) damit alle Nodes sie sicher empfangen
+    // Send the initial pose a few times before moving on — this ensures all
+    // filter nodes and AMCL receive it even if some start up slightly late.
     if (init_pose_counter_ < 5) {
       sendInitialPose();
       init_pose_counter_++;
@@ -109,6 +129,8 @@ private:
     msg.pose.pose.orientation.z = std::sin(yaw / 2.0);
     msg.pose.pose.orientation.w = std::cos(yaw / 2.0);
 
+    // Initial covariance: 0.25 m² in x/y, ~4° in yaw.
+    // Tells AMCL (and the filter nodes) how confident we are in the starting pose.
     msg.pose.covariance = {
       0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
       0.0, 0.25, 0.0, 0.0, 0.0, 0.0,

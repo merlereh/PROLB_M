@@ -15,16 +15,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 
-# Paper-quality font sizes – applied globally to every plot in this project
-plt.rcParams.update({
-    "font.size":             13,   # default text
-    "axes.titlesize":        15,   # plot title
-    "axes.labelsize":        14,   # x/y axis labels
-    "xtick.labelsize":       12,   # x tick numbers
-    "ytick.labelsize":       12,   # y tick numbers
-    "legend.fontsize":       12,   # legend entries
-    "legend.title_fontsize": 12,
-})
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 

@@ -7,20 +7,20 @@
 #include <vector>
 
 // ============================================================================
-// Particle Filter  —  Notation nach Vorlesungsfolien (Thrun 2006)
+// Particle Filter  —  following lecture slides notation (Thrun 2006)
 //
 // State:   x = [x, y, theta, vx, vy, omega]   (6x1)
 // Control: u = [v, omega]                      (2x1)
 //
-// Weighting Full (Odom):
+// Odometry weighting:
 //   z = [x_map, y_map, theta_map]
-//   Fehler pro Partikel nur über x, y, theta:
+//   Each particle is scored based on how well its [x, y, theta] matches z:
 //   w_i ∝ exp(-0.5 * sum(err_k² / Q_k))
 //
-// Rauschen:
-//   R      — Bewegungsrauschen  (6x6, Diagonale)
-//   Q_full — Messrauschen Full  (3x3, Diagonale)
-//   Q_lm   — Messrauschen Landmark (2x2)
+// Noise matrices:
+//   R      — motion noise       (6x6, diagonal)
+//   Q_full — odometry noise     (3x3, diagonal)
+//   Q_lm   — landmark noise     (2x2, diagonal)
 // ============================================================================
 
 using Vector6d = Eigen::Matrix<double, 6, 1>;
@@ -36,7 +36,9 @@ public:
       y_min_(y_min), y_max_(y_max),
       random_generator_(std::random_device{}())
     {
-        // R — Bewegungsrauschen (6x6) — Diagonalmatrix
+        // R — motion noise (6x6) — diagonal matrix.
+        // Added to each particle's state during the prediction step to simulate
+        // the uncertainty in the robot's motion model.
         //
         //         x     y   theta   vx    vy   omega
         //   x  [ 0.05   0     0      0      0     0   ]
@@ -53,7 +55,9 @@ public:
         R_(4,4) = 0.05;
         R_(5,5) = 0.05;
 
-        // Q_full — Messrauschen Full (3x3) — Diagonalmatrix
+        // Q_full — odometry measurement noise (3x3) — diagonal matrix.
+        // Used in the Gaussian likelihood when weighting particles against
+        // the odometry measurement z = [x, y, theta].
         //
         //         x       y     theta
         //   x  [ 0.05     0      0   ]
@@ -64,7 +68,7 @@ public:
         Q_full_(1,1) = 0.05;
         Q_full_(2,2) = 0.02;
 
-        // Q_lm — Messrauschen Landmark (2x2) — Diagonalmatrix
+        // Q_lm — landmark measurement noise (2x2) — diagonal matrix.
         //
         //       r      phi
         //   r  [ 0.1    0   ]
@@ -86,20 +90,21 @@ public:
         double q_x,    double q_y,    double q_theta,
         double q_lm_r, double q_lm_phi)
     {
-        // R — Bewegungsrauschen
+        // R — motion noise
         R_(0,0) = r_x;    R_(1,1) = r_y;    R_(2,2) = r_theta;
         R_(3,3) = r_vx;   R_(4,4) = r_vy;   R_(5,5) = r_omega;
 
-        // Q — Messrauschen Full (nur x, y, theta — aus odom.pose)
+        // Q — odometry measurement noise (x, y, theta from odom.pose)
         Q_full_(0,0) = q_x;    Q_full_(1,1) = q_y;    Q_full_(2,2) = q_theta;
 
-        // Q — Messrauschen Landmark
+        // Q — landmark measurement noise
         Q_lm_(0,0) = q_lm_r;   Q_lm_(1,1) = q_lm_phi;
     }
 
     // -----------------------------------------------------------------------
     // INITIALIZATION
-    // Partikel gleichverteilt im ganzen erlaubten Raum erzeugen
+    // Spread particles uniformly across the entire allowed state space.
+    // Used before the first /initialpose arrives.
     // -----------------------------------------------------------------------
     void initializeParticles()
     {
@@ -165,6 +170,7 @@ public:
 
     // -----------------------------------------------------------------------
     // PREDICT
+    // Propagate each particle through the motion model and add Gaussian noise.
     // -----------------------------------------------------------------------
     Vector6d predict(const Eigen::Vector2d & u, double dt)
     {
@@ -195,12 +201,12 @@ public:
         return mu_bar_;
     }
 
-    const Vector6d             & state()      const { return mu_; }
+    const Vector6d             & state()         const { return mu_; }
     const Vector6d             & predictedState() const { return mu_bar_; }
-    const std::vector<Vector6d>& particles()  const { return particles_; }
-    const std::vector<double>  & weights()    const { return weights_; }
+    const std::vector<Vector6d>& particles()     const { return particles_; }
+    const std::vector<double>  & weights()       const { return weights_; }
 
-    // --- Evaluations-Metriken (letzter update()/updateLandmark()-Aufruf) ---
+    // Evaluation metrics from the last update()/updateLandmark() call.
     double ess() const { return last_ess_; }
     bool   resamplingTriggered() const { return last_resampling_triggered_; }
 
@@ -220,7 +226,7 @@ private:
         }
         const double n = num_particles_;
         m(0) /= n; m(1) /= n;
-        m(2) = std::atan2(ss, cs);
+        m(2) = std::atan2(ss, cs);   // circular mean for angles
         m(3) /= n; m(4) /= n; m(5) /= n;
         return m;
     }
@@ -233,9 +239,9 @@ private:
 
     // -----------------------------------------------------------------------
     // EFFECTIVE SAMPLE SIZE
-    //   ESS = 1 / sum(w_i^2)   für normalisierte Gewichte (sum(w_i) = 1)
-    //   ESS == N        -> alle Partikel gleich gut (keine Degeneration)
-    //   ESS -> 1         -> fast alles Gewicht auf einem einzigen Partikel
+    //   ESS = 1 / sum(w_i²)   for normalized weights (sum(w_i) = 1)
+    //   ESS == N   → all particles equally good (no degeneracy)
+    //   ESS → 1   → almost all weight concentrated on a single particle
     // -----------------------------------------------------------------------
     double computeESS() const
     {
@@ -245,8 +251,8 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // WEIGHTING — Full
-    // Vergleich Partikel [x, y, theta] mit z_full
+    // WEIGHTING — Full odometry
+    // Score each particle by comparing its [x, y, theta] to z_full.
     // w_i ∝ exp(-0.5 * sum(err_k² / Q_k))
     // -----------------------------------------------------------------------
     void computeWeightsFull(const Eigen::Vector3d & z_full)
@@ -259,14 +265,14 @@ private:
 
         for (int i = 0; i < num_particles_; ++i) {
             Eigen::Vector3d err = particles_[i].head<3>() - z_full;
-            err(2) = correctAngle(err(2));  // theta wrappen
+            err(2) = correctAngle(err(2));  // wrap theta to [-π, π]
 
             double exp_val = -0.5 * (
                 err(0)*err(0) / Q_full_(0,0) +
                 err(1)*err(1) / Q_full_(1,1) +
                 err(2)*err(2) / Q_full_(2,2));
 
-            weights_[i] = std::exp(exp_val) + 1e-300;
+            weights_[i] = std::exp(exp_val) + 1e-300;  // floor to avoid zero
             ws += weights_[i];
         }
 
@@ -276,6 +282,8 @@ private:
 
     // -----------------------------------------------------------------------
     // WEIGHTING — Landmark
+    // Score each particle by how well its predicted [r, phi] matches z_lm.
+    // Weights are multiplied (not replaced) so prior odometry weighting is kept.
     // -----------------------------------------------------------------------
     void computeWeightsLandmark(const Eigen::Vector2d & z_lm, const Eigen::Vector2d & lm)
     {
@@ -312,6 +320,8 @@ private:
 
     // -----------------------------------------------------------------------
     // RESAMPLING
+    // Drop particles with weight below threshold_factor_ × average weight,
+    // then draw N new particles from the remaining ones.
     // -----------------------------------------------------------------------
     void resample()
     {
@@ -322,6 +332,8 @@ private:
         const double avg = 1.0 / num_particles_;
         const double thr = threshold_factor_ * avg;
 
+        // Collect indices of particles that meet the weight threshold.
+        // At threshold_factor_ = 0, all particles pass → plain multinomial resampling.
         std::vector<int> good;
         good.reserve(num_particles_);
         for (int i = 0; i < num_particles_; ++i)
@@ -332,9 +344,8 @@ private:
             std::iota(good.begin(), good.end(), 0);
         }
 
-        // "Triggered" heißt hier: der Threshold hat tatsächlich Partikel
-        // ausgesiebt (good < N). Bei good == N wurde nur uniform aus dem
-        // vollen Satz resampled, d.h. de facto kein Pruning passiert.
+        // "Triggered" means the threshold actually filtered some particles out
+        // (good.size() < N). If all particles pass, the threshold had no effect.
         last_resampling_triggered_ = (good.size() < static_cast<std::size_t>(num_particles_));
 
         std::vector<double> gw;

@@ -16,18 +16,46 @@ The robot drives a fixed waypoint loop automatically — no manual teleoperation
 
 ## Requirements
 
-Tested with **ROS 2 Humble** on Ubuntu 22.04.
+### 1. Install ROS 2 Jazzy
+
+Tested on **Ubuntu 24.04 LTS**. Follow the official installation guide:
+<https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html>
+
+Or run these commands directly:
+
+```bash
+sudo apt install software-properties-common curl -y
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+     -o /usr/share/keyrings/ros-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+     http://packages.ros.org/ros2/ubuntu noble main" \
+     | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+sudo apt update
+sudo apt install ros-jazzy-desktop
+```
+
+Add the ROS environment to your shell:
+
+```bash
+echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+source ~/.bashrc
+```
+
+### 2. Install package dependencies
 
 ```bash
 sudo apt install \
-  ros-humble-navigation2 \
-  ros-humble-nav2-bringup \
-  ros-humble-turtlebot3 \
-  ros-humble-turtlebot3-simulations \
+  ros-jazzy-navigation2 \
+  ros-jazzy-nav2-bringup \
+  ros-jazzy-turtlebot3 \
+  ros-jazzy-turtlebot3-simulations \
+  ros-jazzy-ros-gz \
   libeigen3-dev
 ```
 
-Set the TurtleBot3 model (add to `~/.bashrc` so it persists):
+### 3. Set the TurtleBot3 model
+
+Add to `~/.bashrc` so it persists across terminals:
 
 ```bash
 export TURTLEBOT3_MODEL=burger
@@ -42,7 +70,7 @@ This package ships a pre-modified world file at `worlds/tb3_world_landmark.world
 
 **What was changed:** A single cylinder (`radius = 0.05 m`, `height = 0.5 m`) was placed at
 `(1.8, 0.0)` in the world frame. The regular cylinders in the environment have `radius = 0.15 m`,
-so the laser scanner can tell them apart by the width of the cluster they produce in the scan.
+so the laser scanner can tell them apart by the arc width of the cluster they produce in the scan.
 
 The navigation map (`map.yaml` / `map.pgm`) does **not** need to be updated — the landmark
 is small enough that it doesn't visibly block paths and was not present when the map was recorded.
@@ -69,11 +97,13 @@ ros2 launch probl_m full_simulation.launch.py
 ```
 
 **What happens on launch:**
-1. Gazebo starts (headless) with the landmark world.
+1. Gazebo Harmonic starts (headless) with the landmark world.
 2. Nav2 and AMCL start up.
 3. RViz opens with a pre-configured layout.
 4. After a 5-second delay (so Nav2 is ready), all filter nodes start.
-5. The robot receives its initial pose and begins navigating the waypoint loop.
+5. The robot receives its initial pose and begins navigating the waypoint loop automatically.
+
+When the run is finished, `trajectory_log.csv` is written to the directory you launched from.
 
 ---
 
@@ -84,8 +114,8 @@ ros2 launch probl_m full_simulation.launch.py
 | Executable | ROS node name | Output topic | Description |
 |---|---|---|---|
 | `kf_node` | `kf_node` | `/kf_pose` | Linear Kalman Filter. State: `[x, y, θ, vx, vy, ω]`. Correction from odometry every step, landmark correction when detected. |
-| `ekf_node` | `ekf_node` | `/ekf_pose` | Extended Kalman Filter. Same state, but uses the nonlinear `h(x) = [r, φ]` measurement model for the landmark. |
-| `pf_node` | `pf_node` | `/pf_pose`, `/my_particle_cloud` | Particle Filter (500 particles). Uses a Gaussian likelihood for landmark corrections and selective resampling. |
+| `ekf_node` | `ekf_node` | `/ekf_pose` | Extended Kalman Filter. Same state, but uses the nonlinear `h(x) = [r, φ]` measurement model for the landmark with full Jacobian linearization. |
+| `pf_node` | `pf_node` | `/pf_pose`, `/my_particle_cloud` | Particle Filter (500 particles). Gaussian likelihood for landmark corrections and selective resampling. |
 
 All three filter nodes subscribe to:
 - `/odom` + `/scan` — synchronized via `message_filters` (ApproximateTime, 100 ms window)
@@ -98,7 +128,7 @@ All three filter nodes subscribe to:
 |---|---|---|
 | `initial_pose_node` | `initial_pose_node` | Publishes the robot's starting pose to `/initialpose`, then drives it through a fixed sequence of waypoints via Nav2's action server. |
 | `evaluator_node` | `evaluator_node` | Subscribes to all filter outputs, AMCL, and `/odom`, and logs everything to `trajectory_log.csv` for offline analysis. Also records per-step filter runtime, ESS (particle filter), and resampling events. |
-| `landmark_visualizer_node` | `landmark_visualizer_node` | Shows the known landmark position as a blue cylinder in RViz. Runs the same detection logic as the filter nodes and turns a floor indicator green when the landmark is in view and passes the association gate, red otherwise. |
+| `landmark_visualizer_node` | `landmark_visualizer_node` | Shows the known landmark position as a blue cylinder in RViz. Tracks the EKF pose (`/ekf_pose`) to predict where the landmark should appear in the scan. The floor disc turns **green** when the EKF detects the landmark and it passes the association gate — **red** otherwise. Note: this node uses the EKF pose only for visualization; the green indicator specifically reflects EKF landmark detection, independent of what KF or PF see. |
 
 ---
 
@@ -148,11 +178,57 @@ skip_n
 
 ---
 
-## Post-run Analysis
+## Evaluation
+
+After one or more simulation runs, use the experiment scripts to analyse the results.
+All scripts write their output into a `results/` folder.
+
+### Experiment 1 — Baseline comparison
+
+Compares KF, EKF, and PF on a single run using AMCL as the ground-truth reference.
+
+```bash
+python3 scripts/exp1_baseline.py \
+    --csv trajectory_log.csv \
+    --out results/exp1_baseline
+```
+
+Outputs: trajectory plots with 2σ ellipses, RMSE bar chart, runtime bar chart,
+covariance trace over time, and a `summary_baseline.csv` with per-filter metrics.
+
+### Experiment 2 — Q/R noise tuning
+
+Shows how RMSE and covariance trace change as you vary the process-noise (Q) and
+measurement-noise (R) scale. Requires multiple runs saved in subfolders named `p<Q>_m<R>`
+(e.g. `runs/qr/p0.5_m1.0/trajectory_log.csv`).
+
+```bash
+python3 scripts/exp2_qr_tuning.py \
+    --manifest runs/qr/manifest.csv \
+    --out results/exp2_qr
+```
+
+Outputs: per-filter covariance heatmaps and a `summary_qr.csv` with all metrics.
+The ready-made config files for each Q/R combination live in `config/experiments/qr/`.
+
+### Experiment 3 — PF resampling threshold
+
+Evaluates how `pf_threshold_factor` affects accuracy and particle diversity.
+Requires multiple runs with different `pf_threshold_factor` values.
+
+```bash
+python3 scripts/exp3_pf_resampling.py \
+    --root runs/pf_resampling \
+    --out results/exp3_pf_resampling
+```
+
+Outputs: ESS over time, ESS vs. threshold, RMSE vs. threshold, and worst-case error
+vs. threshold — all in `results/exp3_pf_resampling/`.
+
+### Quick plot (single run)
 
 ```bash
 python3 scripts/plot_results.py
 ```
 
-Toggle which filters appear in the plot by setting the `SHOW_*` flags at the top of the script.
-The CSV file `trajectory_log.csv` is written in whichever directory you ran the launch from.
+Toggle which filters appear with the `SHOW_*` flags at the top of the script.

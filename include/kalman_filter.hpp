@@ -4,19 +4,18 @@
 #include <cmath>
 
 // ============================================================================
-// Kalman Filter  —  Notation nach Vorlesungsfolien (Thrun 2006)
+// Kalman Filter  —  following lecture slides notation (Thrun 2006)
 //
 // State:   x = [x, y, theta, vx, vy, omega]   (6x1)
 // Control: u = [v, omega]                      (2x1)
 //
-// Correction Full (Odom):
+// Odometry correction:
 //   z = [x_map, y_map, theta_map]
-//   x/y/theta aus odom.pose  (nach Offset-Transform in Map-Frame)
-//
+//   x/y/theta taken from odom.pose (after offset transform into map frame)
 //   h(x) = [x, y, theta]  →  linear  →  C = [I3 | 0]  (3x6)
 //
-// Correction Landmark:
-//   z_lm = [r, phi]  —  C_lm bleibt LINEAR
+// Landmark correction:
+//   z_lm = [r, phi]  — C_lm stays LINEAR (this is what distinguishes KF from EKF)
 // ============================================================================
 
 using Vector6d   = Eigen::Matrix<double, 6, 1>;
@@ -34,15 +33,16 @@ public:
     {
         mu_ = Vector6d::Zero();
 
-        // Initiale Kovarianz Sigma (6x6) — Diagonalmatrix
+        // Initial covariance Sigma (6x6) — diagonal matrix.
+        // Small values: we trust the initial state estimate fairly well.
         //
         //         x     y   theta   vx     vy   omega
         //   x  [ 0.1   0     0      0      0     0   ]
         //   y  [  0   0.1    0      0      0     0   ]
-        // theta [  0    0   0.02    0      0     0   ]
-        //  vx  [  0    0     0     0.5     0     0   ]
-        //  vy  [  0    0     0      0     0.5    0   ]
-        // omega [  0    0     0      0      0    0.02 ]
+        // theta [  0    0   0.05    0      0     0   ]
+        //  vx  [  0    0     0     0.1     0     0   ]
+        //  vy  [  0    0     0      0     0.1    0   ]
+        // omega [  0    0     0      0      0    0.05 ]
         Sigma_ = Matrix6d::Zero();
         Sigma_(0,0) = 0.1;
         Sigma_(1,1) = 0.1;
@@ -54,7 +54,8 @@ public:
         mu_bar_    = Vector6d::Zero();
         Sigma_bar_ = Matrix6d::Zero();
 
-        // R — Prozessrauschen (6x6) — wird per setNoiseParams befüllt
+        // R — process noise (6x6), filled via setNoiseParams.
+        // Diagonal: how much uncertainty each state component accumulates per step.
         //
         //         x     y   theta   vx    vy   omega
         //   x  [ r_x    0     0      0     0     0   ]
@@ -65,7 +66,7 @@ public:
         // omega [  0     0     0      0     0  r_omega]
         R_ = Matrix6d::Zero();
 
-        // Q_full — Messrauschen Full Correction (3x3) — wird per setNoiseParams befüllt
+        // Q_full — odometry measurement noise (3x3), filled via setNoiseParams.
         //
         //         x       y     theta
         //   x  [ q_x      0      0   ]
@@ -73,7 +74,7 @@ public:
         // theta [  0       0   q_theta]
         Q_full_ = Matrix3d::Zero();
 
-        // Q_lm — Messrauschen Landmark (2x2) — wird per setNoiseParams befüllt
+        // Q_lm — landmark measurement noise (2x2), filled via setNoiseParams.
         //
         //       r          phi
         //   r  [ q_lm_r     0     ]
@@ -92,14 +93,14 @@ public:
         double q_x,     double q_y,     double q_theta,
         double q_lm_r,  double q_lm_phi)
     {
-        // R — Prozessrauschen
+        // R — process noise
         R_(0,0) = r_x;    R_(1,1) = r_y;    R_(2,2) = r_theta;
         R_(3,3) = r_vx;   R_(4,4) = r_vy;   R_(5,5) = r_omega;
 
-        // Q — Messrauschen Full (nur x, y, theta — aus odom.pose)
+        // Q — odometry measurement noise (x, y, theta only)
         Q_full_(0,0) = q_x;     Q_full_(1,1) = q_y;     Q_full_(2,2) = q_theta;
 
-        // Q — Messrauschen Landmark
+        // Q — landmark measurement noise
         Q_lm_(0,0) = q_lm_r;   Q_lm_(1,1) = q_lm_phi;
     }
 
@@ -121,7 +122,7 @@ public:
         // PREDICT
         // =====================
 
-        // Step 1: Predict mean  [Line 2: mu_bar = A * mu]
+        // Step 1: predict mean  [Line 2: mu_bar = A * mu]
         mu_bar_(0) = mu_(0) + v * std::cos(theta) * dt;
         mu_bar_(1) = mu_(1) + v * std::sin(theta) * dt;
         mu_bar_(2) = correctAngle(mu_(2) + omega * dt);
@@ -129,7 +130,7 @@ public:
         mu_bar_(4) = v * std::sin(theta);
         mu_bar_(5) = omega;
 
-        // A — Zustandsübergangsmatrix (6x6)
+        // A — state transition matrix (6x6)
         //
         //         x    y   theta   vx   vy  omega
         //   x  [  1    0     0     dt    0    0  ]
@@ -143,7 +144,7 @@ public:
         A_(1,1) = 1.0;   A_(1,4) = dt;
         A_(2,2) = 1.0;   A_(2,5) = dt;
 
-        // Step 2: Predict covariance  [Line 3: Sigma_bar = A * Sigma * A^T + R]
+        // Step 2: predict covariance  [Line 3: Sigma_bar = A * Sigma * A^T + R]
         Sigma_bar_ = A_ * Sigma_ * A_.transpose() + R_;
 
         return mu_bar_;
@@ -152,14 +153,12 @@ public:
     // -----------------------------------------------------------------------
     // CORRECTION — Full  z = [x_map, y_map, theta_map]
     //
-    // Aus odom:
-    //   x_map/y_map/theta_map  = odom.pose  (nach Offset-Transform)
-    //
-    // h(x) = [x, y, theta]  →  C = [I3 | 0]  (3x6)  →  linear, kein Jacobian nötig
+    // From odometry: x/y/theta in the map frame (after offset transform).
+    // h(x) = [x, y, theta]  →  C = [I3 | 0]  (3x6)  →  linear, no Jacobian needed.
     // -----------------------------------------------------------------------
     Vector6d correctFull(const Eigen::Vector3d & z)
     {
-        // C — Messmatrix (3x6) = [I3 | 0]
+        // C — measurement matrix (3x6) = [I3 | 0]
         //
         //         x    y   theta   vx   vy  omega
         //   x  [  1    0     0      0    0    0  ]
@@ -171,10 +170,10 @@ public:
         C(2,2) = 1.0;
 
         // =====================
-        // KALMAN-GAIN
+        // KALMAN GAIN
         // =====================
 
-        // Step 3: Compute Kalman Gain  [Line 4: K = Sigma_bar * C^T * (C * Sigma_bar * C^T + Q)^-1]
+        // Step 3: K = Sigma_bar * C^T * (C * Sigma_bar * C^T + Q)^-1
         Matrix3d S = C * Sigma_bar_ * C.transpose() + Q_full_;
         K_full_ = Sigma_bar_ * C.transpose() * S.inverse();
 
@@ -182,13 +181,13 @@ public:
         // CORRECT
         // =====================
 
-        // Step 4: Correct mean  [Line 5: mu = mu_bar + K * (z - C * mu_bar)]
+        // Step 4: mu = mu_bar + K * (z - C * mu_bar)
         Eigen::Vector3d innovation = z - C * mu_bar_;
         innovation(2) = correctAngle(innovation(2));
         mu_ = mu_bar_ + K_full_ * innovation;
         mu_(2) = correctAngle(mu_(2));
 
-        // Step 5: Correct covariance  [Line 6: Sigma = (I - K * C) * Sigma_bar]
+        // Step 5: Sigma = (I - K * C) * Sigma_bar
         Sigma_ = (Matrix6d::Identity() - K_full_ * C) * Sigma_bar_;
 
         return mu_;
@@ -196,6 +195,9 @@ public:
 
     // -----------------------------------------------------------------------
     // CORRECTION — Landmark  z_lm = [r, phi]
+    //
+    // In the KF we keep the measurement matrix linear — a rough but fast
+    // approximation. The EKF uses the proper nonlinear Jacobian instead.
     // -----------------------------------------------------------------------
     Vector6d correctLandmark(
         const Eigen::Vector2d & z_lm,
@@ -207,12 +209,12 @@ public:
         const double r = std::sqrt(dx*dx + dy*dy);
         if (r < 1e-6) return mu_;
 
-        // h(mu) — erwartete Messung
+        // expected measurement h(mu)
         Eigen::Vector2d z_hat;
         z_hat(0) = r;
         z_hat(1) = correctAngle(std::atan2(dy, dx) - theta);
 
-        // C_lm — Messmatrix LINEAR (2x6) — KEIN Jacobian
+        // C_lm — linear measurement matrix (2x6) — no Jacobian (unlike EKF)
         //
         //        x       y    theta   vx   vy  omega
         //   r  [-dx/r  -dy/r    0      0    0    0  ]
@@ -223,7 +225,7 @@ public:
         C_lm(1,2) = -1.0;
 
         // =====================
-        // KALMAN-GAIN
+        // KALMAN GAIN
         // =====================
 
         // Step 3: K = Sigma * C^T * (C * Sigma * C^T + Q)^-1
