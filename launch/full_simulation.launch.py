@@ -1,9 +1,11 @@
 """
-cd ~/ros2_ws
-colcon build --packages-select probl_m
-source install/setup.bash
-cd ~/ros2_ws/src/probl_m
-ros2 launch probl_m full_simulation.launch.py
+Build and launch:
+
+  cd ~/ros2_ws
+  colcon build --packages-select probl_m
+  source install/setup.bash
+  cd ~/ros2_ws/src/probl_m
+  ros2 launch probl_m full_simulation.launch.py
 """
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, TimerAction
@@ -15,11 +17,20 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
 
-    # Shared params file — edit config/filter_params.yaml to change noise values
+    # Shared params file — edit config/filter_params.yaml to change noise values.
+    # All three filter nodes load this same file, so one edit affects all of them.
     params_file = PathJoinSubstitution([
         FindPackageShare('probl_m'),
         'config',
-        'experiments/pf_resampling/threshold_t1.0/filter_params.yaml'
+        'filter_params.yaml'
+    ])
+
+    # Custom Gazebo world with the landmark pillar added at (1.8, 0.0).
+    # This is the only thing different from the default nav2_bringup world.
+    landmark_world = PathJoinSubstitution([
+        FindPackageShare('probl_m'),
+        'worlds',
+        'tb3_world_landmark.world'
     ])
 
     nav2_simulation = IncludeLaunchDescription(
@@ -32,7 +43,8 @@ def generate_launch_description():
         ),
         launch_arguments={
             'headless': 'True',
-            'rviz': 'False'
+            'rviz':     'False',
+            'world':    landmark_world,   # use our modified world with the landmark
         }.items()
     )
 
@@ -45,7 +57,7 @@ def generate_launch_description():
             PathJoinSubstitution([
                 FindPackageShare('probl_m'),
                 'config',
-                'config_ekf.rviz'
+                'config_all.rviz'
             ])
         ],
         parameters=[{'use_sim_time': True}]
@@ -57,7 +69,7 @@ def generate_launch_description():
         name='kf_node',
         output='screen',
         parameters=[
-            params_file,               # <-- loads filter_params.yaml
+            params_file,
             {'use_sim_time': True}
         ]
     )
@@ -68,7 +80,7 @@ def generate_launch_description():
         name='ekf_node',
         output='screen',
         parameters=[
-            params_file,               # <-- loads filter_params.yaml
+            params_file,
             {'use_sim_time': True}
         ]
     )
@@ -79,7 +91,7 @@ def generate_launch_description():
         name='pf_node',
         output='screen',
         parameters=[
-            params_file,               # <-- loads filter_params.yaml (incl. pf_threshold_factor)
+            params_file,
             {'use_sim_time': True}
         ]
     )
@@ -108,31 +120,11 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
-    ekf_predict_only_node = Node(
-        package='probl_m',
-        executable='ekf_predict_only_node',
-        name='ekf_predict_only_node',
-        output='screen',
-        parameters=[
-            params_file,
-            {'use_sim_time': True}
-        ]
-    )
-
-    kf_predict_only_node = Node(
-        package='probl_m',
-        executable='kf_predict_only_node',
-        name='kf_predict_only_node',
-        output='screen',
-        parameters=[
-            params_file,
-            {'use_sim_time': True}
-        ]
-    )
-
     return LaunchDescription([
         nav2_simulation,
         rviz_node,
+        # 5-second delay before starting the filter nodes so Nav2 has time to
+        # finish initializing its action servers and the costmap.
         TimerAction(
             period=5.0,
             actions=[
@@ -140,8 +132,6 @@ def generate_launch_description():
                 ekf_node,
                 pf_node,
                 evaluator_node,
-                ekf_predict_only_node,
-                kf_predict_only_node,
                 initial_pose_node,
                 landmark_visualizer_node,
             ]

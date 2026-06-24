@@ -21,16 +21,25 @@
 #include "landmark_scan_helper.hpp"
 #include "extended_kalman_filter.hpp"
 
-static constexpr double LANDMARK_X = 1.8;
-static constexpr double LANDMARK_Y = 0.0;
+// ═══════════════════════════════════════════════════════════════════════════════
+// Landmark-Konfiguration  (muss mit SDF und landmark_visualizer_node.cpp übereinstimmen)
+// ═══════════════════════════════════════════════════════════════════════════════
+static constexpr double LANDMARK_X   = 1.8;
+static constexpr double LANDMARK_Y   = 0.0;
+
+// Association Gate: maximaler Fehler zwischen projizierter Messung und
+// bekannter Landmark-Position im Weltframe.
+// Zu groß  → falsche Detektionen werden akzeptiert.
+// Zu klein → echte Detektionen werden abgelehnt (v. a. bei schlechter Pose).
+static constexpr double ASSOC_GATE_M = 0.60;
 
 // ---------------------------------------------------------------------------
 // ExtendedKalmanFilterNode
 //
-// Trigger:  /odom + /scan     → Synchronizer (ApproximateTime, max 0.1s)
-// Input:    /cmd_vel          → Control u = [v, omega] (gecacht, max. 0.2s alt)
+// Trigger:  /odom + /scan     → Synchronizer (ApproximateTime, max 0.1 s)
+// Input:    /cmd_vel          → Control u = [v, omega] (gecacht, max. 0.2 s alt)
 //           /odom             → z = [x_map, y_map, theta_map]
-//           /scan             → Laser für Landmark
+//           /scan             → Laser für Landmark-Erkennung
 //           /initialpose      → Startpose setzen
 // Output:   /ekf_pose         → geschätzte Pose als PoseWithCovarianceStamped
 // ---------------------------------------------------------------------------
@@ -45,17 +54,17 @@ public:
   ExtendedKalmanFilterNode() : Node("ekf_node")
   {
     // --- ROS-Parameter für Rauschmatrizen R und Q ---
-    this->declare_parameter("r_x",          0.05);
-    this->declare_parameter("r_y",          0.05);
-    this->declare_parameter("r_theta",      0.02);
-    this->declare_parameter("r_vx",         0.10);
-    this->declare_parameter("r_vy",         0.05);
-    this->declare_parameter("r_omega",      0.05);
-    this->declare_parameter("q_x",          0.10);
-    this->declare_parameter("q_y",          0.10);
-    this->declare_parameter("q_theta",      0.05);
-    this->declare_parameter("q_lm_r",       0.05);
-    this->declare_parameter("q_lm_phi",     0.01);
+    this->declare_parameter("r_x",      0.05);
+    this->declare_parameter("r_y",      0.05);
+    this->declare_parameter("r_theta",  0.02);
+    this->declare_parameter("r_vx",     0.10);
+    this->declare_parameter("r_vy",     0.05);
+    this->declare_parameter("r_omega",  0.05);
+    this->declare_parameter("q_x",      0.10);
+    this->declare_parameter("q_y",      0.10);
+    this->declare_parameter("q_theta",  0.05);
+    this->declare_parameter("q_lm_r",   0.05);
+    this->declare_parameter("q_lm_phi", 0.01);
 
     // --- ROS-Parameter für künstliches Odom-Rauschen (Standardabweichung) ---
     this->declare_parameter("odom_noise_x",     0.05);
@@ -122,8 +131,8 @@ public:
         "/ekf_pose", 10);
 
     RCLCPP_INFO(this->get_logger(),
-      "EKF-Node gestartet. Warte auf /initialpose. Landmark bei (%.2f, %.2f)",
-      LANDMARK_X, LANDMARK_Y);
+      "EKF-Node gestartet. Warte auf /initialpose. "
+      "Landmark-Säule bei (%.2f, %.2f)", LANDMARK_X, LANDMARK_Y);
   }
 
 private:
@@ -131,15 +140,16 @@ private:
     const nav_msgs::msg::Odometry::ConstSharedPtr      & odom_msg,
     const sensor_msgs::msg::LaserScan::ConstSharedPtr  & scan_msg)
   {
-    if (!initialized_) return;
-    if (!has_cmd_vel_) return;
+    if (!initialized_)  return;
+    if (!has_cmd_vel_)  return;
     if (std::abs((this->now() - last_cmd_time_).seconds()) > 0.2) return;
 
     rclcpp::Time current_time = odom_msg->header.stamp;
 
     const double x_odom     = odom_msg->pose.pose.position.x     + noiseX();
     const double y_odom     = odom_msg->pose.pose.position.y     + noiseY();
-    const double theta_odom = correctAngle(getYaw(odom_msg->pose.pose.orientation) + noiseTheta());
+    const double theta_odom = correctAngle(
+        getYaw(odom_msg->pose.pose.orientation) + noiseTheta());
 
     // --- Einmalig: Offset odom → map berechnen ---
     if (!odom_initialized_) {
@@ -160,8 +170,8 @@ private:
     last_time_ = current_time;
     if (dt <= 0.0 || dt > 1.0) return;
 
-    // --- z = [x_map, y_map, theta_map] ---
-    const double co = std::cos(offset_theta_), so = std::sin(offset_theta_);
+    // --- z = [x_map, y_map, theta_map] aus Odometrie ---
+    const double co        = std::cos(offset_theta_), so = std::sin(offset_theta_);
     const double x_map     = co * x_odom - so * y_odom + offset_x_;
     const double y_map     = so * x_odom + co * y_odom + offset_y_;
     const double theta_map = correctAngle(theta_odom + offset_theta_);
@@ -182,17 +192,36 @@ private:
     // --- 2) EKF Correct: x, y, theta aus Odom ---
     Vector6d estimate = filter_.correctFull(z_full);
 
-    // --- 3) EKF Correct: Landmark ---
+    // --- 3) EKF Correct: Landmark-Säule ---
     const Vector6d & state = filter_.state();
     double r_meas, phi_meas;
-    if (detectLandmark(*scan_msg, state(0), state(1), state(2),
-                       LANDMARK_X, LANDMARK_Y, r_meas, phi_meas)) {
-      Eigen::Vector2d z_lm; z_lm << r_meas, phi_meas;
-      Eigen::Vector2d lm;   lm   << LANDMARK_X, LANDMARK_Y;
-      estimate = filter_.correctLandmark(z_lm, lm);
-      RCLCPP_INFO(this->get_logger(),
-        "Landmark: r=%.3f phi=%.3f -> x=%.3f y=%.3f",
-        r_meas, phi_meas, estimate(0), estimate(1));
+
+    if (detectLandmark(*scan_msg,
+                       state(0), state(1), state(2),
+                       LANDMARK_X, LANDMARK_Y,
+                       r_meas, phi_meas))
+    {
+      // Association Gate:
+      // Messung in Weltkoordinaten projizieren und mit bekannter
+      // Landmark-Position vergleichen.
+      // Verhindert Korrekturen durch falsche Detektionen.
+      const double wx = state(0) + r_meas * std::cos(state(2) + phi_meas);
+      const double wy = state(1) + r_meas * std::sin(state(2) + phi_meas);
+      const double assoc_err =
+        std::sqrt((wx - LANDMARK_X) * (wx - LANDMARK_X) +
+                  (wy - LANDMARK_Y) * (wy - LANDMARK_Y));
+
+      if (assoc_err < ASSOC_GATE_M) {
+        Eigen::Vector2d z_lm; z_lm << r_meas, phi_meas;
+        Eigen::Vector2d lm;   lm   << LANDMARK_X, LANDMARK_Y;
+        estimate = filter_.correctLandmark(z_lm, lm);
+        RCLCPP_INFO(this->get_logger(),
+          "Landmark akzeptiert: r=%.3f phi=%.3f assoc_err=%.3f → x=%.3f y=%.3f",
+          r_meas, phi_meas, assoc_err, estimate(0), estimate(1));
+      } else {
+        RCLCPP_WARN(this->get_logger(),
+          "Landmark abgelehnt (assoc_err=%.2f > %.2f)", assoc_err, ASSOC_GATE_M);
+      }
     }
 
     const auto t_end = std::chrono::steady_clock::now();
@@ -203,51 +232,59 @@ private:
     publishPose(estimate, odom_msg->header.stamp, "map", runtime_ms);
   }
 
+  // ── Hilfsfunktionen ──────────────────────────────────────────────────────
+
   static double correctAngle(double a)
   { return std::atan2(std::sin(a), std::cos(a)); }
 
-  // --- Künstliches Gaussian-Rauschen auf die Odom-Pose ---
-  double noiseX()     { return std::normal_distribution<double>(0.0, odom_noise_x_)(rng_); }
-  double noiseY()     { return std::normal_distribution<double>(0.0, odom_noise_y_)(rng_); }
-  double noiseTheta() { return std::normal_distribution<double>(0.0, odom_noise_theta_)(rng_); }
+  double noiseX()
+  { return std::normal_distribution<double>(0.0, odom_noise_x_)(rng_); }
+  double noiseY()
+  { return std::normal_distribution<double>(0.0, odom_noise_y_)(rng_); }
+  double noiseTheta()
+  { return std::normal_distribution<double>(0.0, odom_noise_theta_)(rng_); }
 
   double getYaw(const geometry_msgs::msg::Quaternion & q_msg)
   {
     tf2::Quaternion q(q_msg.x, q_msg.y, q_msg.z, q_msg.w);
-    double r, p, y; tf2::Matrix3x3(q).getRPY(r, p, y); return y;
+    double r, p, y;
+    tf2::Matrix3x3(q).getRPY(r, p, y);
+    return y;
   }
 
-  void publishPose(const Vector6d & s, const rclcpp::Time & stamp, const std::string & fid, double runtime_ms)
+  void publishPose(const Vector6d & s, const rclcpp::Time & stamp,
+                   const std::string & fid, double runtime_ms)
   {
     geometry_msgs::msg::PoseWithCovarianceStamped msg;
     msg.header.stamp    = stamp;
     msg.header.frame_id = fid;
     msg.pose.pose.position.x = s(0);
     msg.pose.pose.position.y = s(1);
-    tf2::Quaternion q; q.setRPY(0, 0, s(2));
+    tf2::Quaternion q;
+    q.setRPY(0, 0, s(2));
     msg.pose.pose.orientation = tf2::toMsg(q);
     for (int i = 0; i < 36; ++i) msg.pose.covariance[i] = 0.0;
     const auto & cov = filter_.covariance();
-    msg.pose.covariance[0]  = cov(0,0);
-    msg.pose.covariance[7]  = cov(1,1);
-    msg.pose.covariance[35] = cov(2,2);
-    msg.pose.covariance[1]  = cov(0,1);
-    msg.pose.covariance[6]  = cov(1,0);
-
-    // Ungenutzter z-z-Slot (Index 14) für die Update-Laufzeit zweckentfremdet
-    // — siehe Kommentar in particle_filter_node.cpp für die Begründung.
-    msg.pose.covariance[14] = runtime_ms;
-
+    msg.pose.covariance[0]  = cov(0, 0);
+    msg.pose.covariance[7]  = cov(1, 1);
+    msg.pose.covariance[35] = cov(2, 2);
+    msg.pose.covariance[1]  = cov(0, 1);
+    msg.pose.covariance[6]  = cov(1, 0);
+    msg.pose.covariance[14] = runtime_ms;   // Laufzeit in ms (Debug)
     pose_pub_->publish(msg);
   }
+
+  // ── Member-Variablen ─────────────────────────────────────────────────────
 
   message_filters::Subscriber<nav_msgs::msg::Odometry>      odom_sub_;
   message_filters::Subscriber<sensor_msgs::msg::LaserScan>  scan_sub_;
   std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
-  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
+    initialpose_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
+    pose_pub_;
 
   ExtendedKalmanFilter filter_;
 
@@ -256,7 +293,6 @@ private:
   rclcpp::Time last_cmd_time_, last_time_;
   bool has_cmd_vel_{false}, initialized_{false}, odom_initialized_{false};
 
-  // --- Künstliches Odom-Rauschen ---
   double odom_noise_x_{0.0}, odom_noise_y_{0.0}, odom_noise_theta_{0.0};
   std::mt19937 rng_{std::random_device{}()};
 };

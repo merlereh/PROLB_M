@@ -1,365 +1,336 @@
-#!/usr/bin/env python3
 """
-Common evaluation utilities for PRO Lab KF/EKF/PF experiments.
+eval_common.py  –  shared utilities for KF / EKF / PF experiment scripts
 
-Expected trajectory CSV columns, minimum:
-    time, source, x, y
-Optional:
-    theta, cov_xx, cov_yy, cov_xy,
-    runtime_ms / update_time_ms / compute_time_ms,
-    ess, resampling_triggered,
-    particle_var_x, particle_var_y, particle_cov_trace
-
-Reference source defaults to AMCL. The assignment asks for same input data,
-same coordinate frame, same test trajectories and quantitative metrics, so all
-scripts use nearest-timestamp alignment against one reference trajectory.
+Expected CSV columns (minimum):  time, source, x, y
+Optional:  cov_xx, cov_yy, cov_xy,
+           runtime_ms / update_time_ms / compute_time_ms,
+           ess
 """
-
-from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Iterable, Optional
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 
-CHI2_2D_95 = 5.991464547107979  # 95% confidence region for chi-square with 2 DoF
-RUNTIME_COLS = ("runtime_ms", "update_time_ms", "compute_time_ms", "dt_runtime_ms")
+# Paper-quality font sizes – applied globally to every plot in this project
+plt.rcParams.update({
+    "font.size":             13,   # default text
+    "axes.titlesize":        15,   # plot title
+    "axes.labelsize":        14,   # x/y axis labels
+    "xtick.labelsize":       12,   # x tick numbers
+    "ytick.labelsize":       12,   # y tick numbers
+    "legend.fontsize":       12,   # legend entries
+    "legend.title_fontsize": 12,
+})
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+# Per-filter colours – same colour in every plot so KF is always orange, etc.
+FILTER_COLORS = {
+    "amcl": "#1f77b4",   # blue   – reference
+    "kf":   "#ff7f0e",   # orange
+    "ekf":  "#2ca02c",   # green
+    "pf":   "#d62728",   # red
+}
 
 FILTER_LABELS = {
-    "kf": "KF",
-    "ekf": "EKF",
-    "pf": "PF",
-    "odom": "Odometry",
-    "amcl": "AMCL reference",
-    "ekf_predict_only": "EKF predict-only",
-    "kf_predict_only": "KF predict-only",
+    "amcl": "AMCL (reference)",
+    "kf":   "KF",
+    "ekf":  "EKF",
+    "pf":   "PF",
 }
+
+# Must match LANDMARK_X / LANDMARK_Y in the C++ filter nodes
+LANDMARKS = [(1.8, 0.0)]
+
+# Possible column names for per-update compute time (try all of them)
+RUNTIME_COLS = ("runtime_ms", "update_time_ms", "compute_time_ms", "dt_runtime_ms")
+
+# 95 % confidence threshold for 2D chi-square (used for 2σ coverage check)
+_CHI2_95 = 5.991
 
 
 def label(src: str) -> str:
-    return FILTER_LABELS.get(str(src).lower(), str(src))
+    """Human-readable display name for a filter source ('ekf' → 'EKF')."""
+    return FILTER_LABELS.get(src.lower(), src)
 
 
-def ensure_outdir(outdir: str | Path) -> Path:
-    path = Path(outdir)
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def ensure_outdir(path) -> Path:
+    """Create output directory (including parents) if it does not exist."""
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
-def load_csv(csv_file: str | Path) -> pd.DataFrame:
-    csv_file = Path(csv_file)
+# ── Data loading ───────────────────────────────────────────────────────────────
+
+def load_csv(csv_file) -> pd.DataFrame:
+    """
+    Load a trajectory log CSV.
+    Required columns: time, source, x, y.
+    'source' is normalised to lowercase so 'KF' and 'kf' are treated the same.
+    """
     df = pd.read_csv(csv_file)
-    required = {"time", "source", "x", "y"}
-    missing = required - set(df.columns)
+    missing = {"time", "source", "x", "y"} - set(df.columns)
     if missing:
-        raise ValueError(f"{csv_file} is missing required columns: {sorted(missing)}")
-    df = df.copy()
-    df["source"] = df["source"].astype(str).str.lower().str.strip()
-    df = df.sort_values("time").reset_index(drop=True)
-    return df
+        raise ValueError(f"{csv_file}: missing columns {sorted(missing)}")
+    df["source"] = df["source"].str.lower().str.strip()
+    return df.sort_values("time").reset_index(drop=True)
 
 
-def nearest_indices(ref_times: np.ndarray, query_times: np.ndarray) -> np.ndarray:
-    idx = np.searchsorted(ref_times, query_times)
-    idx = np.clip(idx, 0, len(ref_times) - 1)
-    idx_prev = np.maximum(idx - 1, 0)
-    use_prev = np.abs(ref_times[idx_prev] - query_times) < np.abs(ref_times[idx] - query_times)
-    idx[use_prev] = idx_prev[use_prev]
+def _nearest_indices(ref_times: np.ndarray, query_times: np.ndarray) -> np.ndarray:
+    """For each query timestamp return the index of the nearest reference timestamp."""
+    idx  = np.clip(np.searchsorted(ref_times, query_times), 0, len(ref_times) - 1)
+    prev = np.maximum(idx - 1, 0)
+    closer_to_prev = np.abs(ref_times[prev] - query_times) < np.abs(ref_times[idx] - query_times)
+    idx[closer_to_prev] = prev[closer_to_prev]
     return idx
 
 
-def align_to_reference(
-    df: pd.DataFrame,
-    source: str,
-    ref_source: str = "amcl",
-    max_time_diff: float = 0.5,
-) -> pd.DataFrame:
-    """Return source rows with nearest reference x/y attached."""
-    source = source.lower()
-    ref_source = ref_source.lower()
-    sub = df[df["source"] == source].sort_values("time").reset_index(drop=True)
-    ref = df[df["source"] == ref_source].sort_values("time").reset_index(drop=True)
+def align_to_reference(df: pd.DataFrame, source: str,
+                       ref_source: str = "amcl", max_dt: float = 0.5) -> pd.DataFrame:
+    """
+    Match each filter pose to the nearest reference (AMCL) pose in time.
 
-    if sub.empty:
-        raise ValueError(f"No rows found for source={source!r}")
+    Adds columns: x_ref, y_ref, error_x, error_y, error_pos.
+    Rows where the nearest reference is more than max_dt seconds away are dropped.
+    """
+    src = df[df["source"] == source.lower()].sort_values("time").reset_index(drop=True)
+    ref = df[df["source"] == ref_source.lower()].sort_values("time").reset_index(drop=True)
+
+    if src.empty:
+        raise ValueError(f"No data for source='{source}'")
     if ref.empty:
-        raise ValueError(f"No reference rows found for ref_source={ref_source!r}")
+        raise ValueError(f"No data for ref_source='{ref_source}'")
 
-    ref_times = ref["time"].to_numpy(float)
-    q_times = sub["time"].to_numpy(float)
-    idx = nearest_indices(ref_times, q_times)
-    dt = np.abs(ref_times[idx] - q_times)
-    valid = dt <= max_time_diff
+    ref_t = ref["time"].to_numpy(float)
+    q_t   = src["time"].to_numpy(float)
+    idx   = _nearest_indices(ref_t, q_t)
+    dt    = np.abs(ref_t[idx] - q_t)
+    mask  = dt <= max_dt
 
-    out = sub.loc[valid].copy().reset_index(drop=True)
-    out["ref_time"] = ref_times[idx][valid]
-    out["time_diff_ref"] = dt[valid]
-    out["x_ref"] = ref["x"].to_numpy(float)[idx][valid]
-    out["y_ref"] = ref["y"].to_numpy(float)[idx][valid]
-    out["error_x"] = out["x"].to_numpy(float) - out["x_ref"].to_numpy(float)
-    out["error_y"] = out["y"].to_numpy(float) - out["y_ref"].to_numpy(float)
-    out["error_pos"] = np.sqrt(out["error_x"] ** 2 + out["error_y"] ** 2)
+    out = src[mask].copy().reset_index(drop=True)
+    out["x_ref"]     = ref["x"].to_numpy()[idx][mask]
+    out["y_ref"]     = ref["y"].to_numpy()[idx][mask]
+    out["error_x"]   = out["x"] - out["x_ref"]
+    out["error_y"]   = out["y"] - out["y_ref"]
+    out["error_pos"] = np.sqrt(out["error_x"]**2 + out["error_y"]**2)
     return out
 
 
-def cov_trace_xy(row_or_df: pd.DataFrame | pd.Series) -> pd.Series | float:
-    return row_or_df["cov_xx"] + row_or_df["cov_yy"]
+# ── Metrics ────────────────────────────────────────────────────────────────────
 
+def compute_metrics(df: pd.DataFrame, source: str,
+                    ref_source: str = "amcl", max_dt: float = 0.5) -> tuple[dict, pd.DataFrame]:
+    """
+    Compute standard localisation metrics for one filter.
+    Returns (metrics_dict, aligned_dataframe).
 
-def cov_det_xy(row_or_df: pd.DataFrame | pd.Series) -> pd.Series | float:
-    return row_or_df["cov_xx"] * row_or_df["cov_yy"] - row_or_df["cov_xy"] ** 2
+    Metrics always present:
+        source, rmse_m, max_error_m, mae_m, n_samples,
+        mean_cov_trace, mean_runtime_ms
+    Metrics added when data is available:
+        coverage_2sigma_pct  – fraction of errors inside the 2σ ellipse
+        mean_ess, min_ess    – PF effective sample size
+    """
+    a   = align_to_reference(df, source, ref_source, max_dt)
+    err = a["error_pos"].to_numpy()
 
-
-def add_covariance_consistency(aligned: pd.DataFrame) -> pd.DataFrame:
-    """Add trace/determinant/Mahalanobis/2-sigma coverage if covariance exists."""
-    out = aligned.copy()
-    needed = {"cov_xx", "cov_yy", "cov_xy"}
-    if not needed.issubset(out.columns):
-        out["cov_trace_xy"] = np.nan
-        out["cov_det_xy"] = np.nan
-        out["mahalanobis2_xy"] = np.nan
-        out["inside_2sigma"] = np.nan
-        return out
-
-    cxx = out["cov_xx"].to_numpy(float)
-    cyy = out["cov_yy"].to_numpy(float)
-    cxy = out["cov_xy"].to_numpy(float)
-    ex = out["error_x"].to_numpy(float)
-    ey = out["error_y"].to_numpy(float)
-    det = cxx * cyy - cxy * cxy
-    trace = cxx + cyy
-
-    maha = np.full(len(out), np.nan)
-    valid = (det > 1e-12) & np.isfinite(det) & (cxx >= 0) & (cyy >= 0)
-    # inverse of [[cxx,cxy],[cxy,cyy]] times error vector
-    maha[valid] = (
-        cyy[valid] * ex[valid] ** 2
-        - 2.0 * cxy[valid] * ex[valid] * ey[valid]
-        + cxx[valid] * ey[valid] ** 2
-    ) / det[valid]
-
-    out["cov_trace_xy"] = trace
-    out["cov_det_xy"] = det
-    out["mahalanobis2_xy"] = maha
-    inside = np.where(np.isfinite(maha), maha <= CHI2_2D_95, np.nan)
-    out["inside_2sigma"] = inside
-    return out
-
-
-def first_existing_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
-    for col in candidates:
-        if col in df.columns:
-            return col
-    return None
-
-
-def compute_metrics(
-    df: pd.DataFrame,
-    source: str,
-    ref_source: str = "amcl",
-    max_time_diff: float = 0.5,
-) -> tuple[pd.Series, pd.DataFrame]:
-    aligned = align_to_reference(df, source, ref_source, max_time_diff)
-    aligned = add_covariance_consistency(aligned)
-    err = aligned["error_pos"].to_numpy(float)
-
-    metrics = {
-        "source": source.lower(),
-        "n_samples": int(len(aligned)),
-        "rmse_m": float(np.sqrt(np.mean(err ** 2))) if len(err) else np.nan,
-        "mae_m": float(np.mean(np.abs(err))) if len(err) else np.nan,
-        "max_error_m": float(np.max(err)) if len(err) else np.nan,
-        "final_error_m": float(err[-1]) if len(err) else np.nan,
-        "std_error_m": float(np.std(err)) if len(err) else np.nan,
-        "mean_cov_trace_xy": float(np.nanmean(aligned["cov_trace_xy"])) if "cov_trace_xy" in aligned else np.nan,
-        "mean_cov_det_xy": float(np.nanmean(aligned["cov_det_xy"])) if "cov_det_xy" in aligned else np.nan,
-        "coverage_2sigma_pct": float(100.0 * np.nanmean(aligned["inside_2sigma"])) if "inside_2sigma" in aligned else np.nan,
+    m: dict = {
+        "source":      source.lower(),
+        "rmse_m":      float(np.sqrt(np.mean(err**2))),
+        "max_error_m": float(np.max(err)),
+        "mae_m":       float(np.mean(np.abs(err))),
+        "n_samples":   int(len(a)),
     }
 
-    runtime_col = first_existing_column(aligned, RUNTIME_COLS)
-    if runtime_col:
-        metrics["mean_runtime_ms"] = float(np.nanmean(aligned[runtime_col]))
-        metrics["max_runtime_ms"] = float(np.nanmax(aligned[runtime_col]))
+    # Covariance trace = cov_xx + cov_yy  (total xy position uncertainty)
+    if {"cov_xx", "cov_yy"}.issubset(a.columns):
+        a["cov_trace"] = a["cov_xx"] + a["cov_yy"]
+        m["mean_cov_trace"] = float(np.nanmean(a["cov_trace"]))
+
+        # 2σ coverage: fraction of timesteps where the error lies inside the
+        # 95% confidence ellipse of the filter's own covariance estimate
+        if "cov_xy" in a.columns:
+            cxx, cyy, cxy = a["cov_xx"].to_numpy(), a["cov_yy"].to_numpy(), a["cov_xy"].to_numpy()
+            ex,  ey       = a["error_x"].to_numpy(), a["error_y"].to_numpy()
+            det  = cxx * cyy - cxy**2
+            maha = np.where(det > 1e-12,
+                            (cyy*ex**2 - 2*cxy*ex*ey + cxx*ey**2) / np.maximum(det, 1e-30),
+                            np.nan)
+            m["coverage_2sigma_pct"] = float(100.0 * np.nanmean(maha <= _CHI2_95))
     else:
-        metrics["mean_runtime_ms"] = np.nan
-        metrics["max_runtime_ms"] = np.nan
+        a["cov_trace"]      = np.nan
+        m["mean_cov_trace"] = np.nan
 
-    if "time" in aligned and len(aligned) > 1:
-        dts = np.diff(aligned["time"].to_numpy(float))
-        dts = dts[dts > 0]
-        metrics["mean_period_s"] = float(np.mean(dts)) if len(dts) else np.nan
-        metrics["mean_rate_hz"] = float(1.0 / np.mean(dts)) if len(dts) else np.nan
-    else:
-        metrics["mean_period_s"] = np.nan
-        metrics["mean_rate_hz"] = np.nan
+    # Runtime per update (try several possible column names from different nodes)
+    rt_col = next((c for c in RUNTIME_COLS if c in a.columns), None)
+    m["mean_runtime_ms"] = float(np.nanmean(a[rt_col])) if rt_col else np.nan
 
-    # PF-specific optional metrics
-    if "ess" in aligned.columns:
-        metrics["mean_ess"] = float(np.nanmean(aligned["ess"]))
-        metrics["min_ess"] = float(np.nanmin(aligned["ess"]))
-    else:
-        metrics["mean_ess"] = np.nan
-        metrics["min_ess"] = np.nan
+    # PF-specific: effective sample size (ESS = N_eff / N)
+    if "ess" in a.columns:
+        m["mean_ess"] = float(np.nanmean(a["ess"]))
+        m["min_ess"]  = float(np.nanmin(a["ess"]))
 
-    resample_col = first_existing_column(aligned, ("resampling_triggered", "resampled", "did_resample"))
-    if resample_col:
-        metrics["resampling_count"] = int(np.nansum(aligned[resample_col].astype(float)))
-    else:
-        metrics["resampling_count"] = np.nan
-
-    if "particle_cov_trace" in aligned.columns:
-        metrics["mean_particle_spread"] = float(np.nanmean(aligned["particle_cov_trace"]))
-    elif {"particle_var_x", "particle_var_y"}.issubset(aligned.columns):
-        metrics["mean_particle_spread"] = float(np.nanmean(aligned["particle_var_x"] + aligned["particle_var_y"]))
-    else:
-        metrics["mean_particle_spread"] = np.nan
-
-    return pd.Series(metrics), aligned
+    return m, a
 
 
-def save_metrics_table(metrics: list[pd.Series], out_csv: str | Path) -> pd.DataFrame:
-    table = pd.DataFrame(metrics)
-    table.to_csv(out_csv, index=False)
-    return table
+# ── Plotting ───────────────────────────────────────────────────────────────────
 
-
-def cov_ellipse_patch(x, y, cov_xx, cov_yy, cov_xy, n_std=2.0, **kwargs):
-    cov = np.array([[cov_xx, cov_xy], [cov_xy, cov_yy]], dtype=float)
+def _cov_ellipse(x, y, cxx, cyy, cxy, n_std=2.0, **kwargs):
+    """Return a matplotlib Ellipse patch for a 2x2 position covariance, or None if degenerate."""
+    cov = np.array([[cxx, cxy], [cxy, cyy]], float)
     if not np.all(np.isfinite(cov)):
         return None
     vals, vecs = np.linalg.eigh(cov)
     vals = np.maximum(vals, 0.0)
-    if np.all(vals <= 1e-12):
+    if np.all(vals < 1e-12):
         return None
     order = vals.argsort()[::-1]
-    vals = vals[order]
-    vecs = vecs[:, order]
-    width = 2.0 * n_std * math.sqrt(vals[0])
-    height = 2.0 * n_std * math.sqrt(vals[1])
+    vals, vecs = vals[order], vecs[:, order]
     angle = math.degrees(math.atan2(vecs[1, 0], vecs[0, 0]))
-    return Ellipse((x, y), width=width, height=height, angle=angle, **kwargs)
+    return Ellipse((x, y),
+                   width=2 * n_std * math.sqrt(vals[0]),
+                   height=2 * n_std * math.sqrt(vals[1]),
+                   angle=angle, **kwargs)
 
 
-def plot_trajectories(
-    df: pd.DataFrame,
-    sources: list[str],
-    out_file: str | Path,
-    ref_source: str = "amcl",
-    ellipse_every: int = 100,
-    n_std: float = 2.0,
-):
+# Font sizes used in all plot functions
+_FS = dict(title=25, label=20, tick=20, legend=20, annot=20)
+
+
+def plot_trajectories(df: pd.DataFrame, sources: list[str], out_file,
+                      ref_source: str = "amcl", ellipse_every: int = 30):
+    """
+    x/y trajectory plot for the AMCL reference (dashed) and all filter sources (solid).
+    2-sigma covariance ellipses are drawn every ellipse_every poses.
+    """
     fig, ax = plt.subplots(figsize=(10, 8))
-    ax.set_title("Trajectories and uncertainty ellipses")
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, alpha=0.3)
+    ax.set_title("Trajectories with 2-sigma uncertainty ellipses", fontsize=_FS["title"])
+    ax.set_xlabel("x [m]",  fontsize=_FS["label"])
+    ax.set_ylabel("y [m]",  fontsize=_FS["label"])
+    ax.tick_params(labelsize=_FS["tick"])
+    ax.set_aspect("equal")
+    ax.grid(alpha=0.3)
 
-    plot_sources = [ref_source.lower()] + [s.lower() for s in sources]
-    seen = set()
-    for src in plot_sources:
-        if src in seen:
-            continue
-        seen.add(src)
-        sub = df[df["source"] == src].sort_values("time").reset_index(drop=True)
+    # Reference trajectory – dashed, drawn first so it sits behind filter lines
+    ref = df[df["source"] == ref_source.lower()].sort_values("time")
+    ax.plot(ref["x"], ref["y"], "--", lw=2.0,
+            color=FILTER_COLORS.get(ref_source.lower(), "#1f77b4"),
+            label=label(ref_source))
+
+    for src in sources:
+        sub = df[df["source"] == src.lower()].sort_values("time").reset_index(drop=True)
         if sub.empty:
             continue
-        ls = "--" if src == ref_source.lower() else "-"
-        lw = 1.2 if src == ref_source.lower() else 1.5
-        ax.plot(sub["x"], sub["y"], ls=ls, lw=lw, label=label(src))
-        ax.scatter(sub["x"].iloc[0], sub["y"].iloc[0], s=25)
+        color = FILTER_COLORS.get(src.lower(), "#888")
+        ax.plot(sub["x"], sub["y"], lw=2.5, color=color, label=label(src))
+        ax.scatter(sub["x"].iloc[0], sub["y"].iloc[0], s=25, color=color, zorder=5)
 
-        if src != ref_source.lower() and ellipse_every > 0 and {"cov_xx", "cov_yy", "cov_xy"}.issubset(sub.columns):
-            line_color = ax.lines[-1].get_color()
-            for i in range(0, len(sub), ellipse_every):
-                r = sub.iloc[i]
-                ell = cov_ellipse_patch(
-                    r["x"], r["y"], r["cov_xx"], r["cov_yy"], r["cov_xy"],
-                    n_std=n_std,
-                    edgecolor=line_color,
-                    facecolor="none",
-                    linewidth=0.7,
-                    alpha=0.35,
-                )
-                if ell is not None:
+        if ellipse_every > 0 and {"cov_xx", "cov_yy", "cov_xy"}.issubset(sub.columns):
+            for i in range(0, len(sub), ellipse_every * 2):
+                r   = sub.iloc[i]
+                ell = _cov_ellipse(r["x"], r["y"], r["cov_xx"], r["cov_yy"], r["cov_xy"],
+                                   edgecolor=color, facecolor="none", lw=1.8, alpha=0.6)
+                if ell:
                     ax.add_patch(ell)
 
-    ax.legend()
+    for i, (lx, ly) in enumerate(LANDMARKS):
+        ax.scatter([lx], [ly], marker="*", s=350, color="gold", edgecolor="black",
+                   lw=1.2, zorder=6, label="Landmark" if i == 0 else None)
+
+    ax.legend(fontsize=_FS["legend"])
     fig.tight_layout()
-    fig.savefig(out_file, dpi=180)
+    fig.savefig(out_file, dpi=150)
     plt.close(fig)
 
 
-def plot_error_time(aligned_by_source: dict[str, pd.DataFrame], out_file: str | Path):
+def plot_cov_trace_time(aligned_by_source: dict[str, pd.DataFrame], out_file):
+    """
+    Line plot of covariance trace (cov_xx + cov_yy) over time.
+    Filters without covariance data are silently skipped.
+    """
     fig, ax = plt.subplots(figsize=(11, 5))
-    ax.set_title("Position error over time")
-    ax.set_xlabel("time from start [s]")
-    ax.set_ylabel("position error [m]")
-    ax.grid(True, alpha=0.3)
+    ax.set_title("Position covariance trace over time",        fontsize=_FS["title"])
+    ax.set_xlabel("time from start [s]",                       fontsize=_FS["label"])
+    ax.set_ylabel("Position Covariance [m²]",                   fontsize=_FS["label"])
+    ax.tick_params(labelsize=_FS["tick"])
+    ax.grid(alpha=0.3)
+
     t0 = min(float(a["time"].min()) for a in aligned_by_source.values() if not a.empty)
     for src, a in aligned_by_source.items():
-        ax.plot(a["time"] - t0, a["error_pos"], lw=1.0, label=label(src))
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(out_file, dpi=180)
-    plt.close(fig)
-
-
-def plot_cov_trace_time(aligned_by_source: dict[str, pd.DataFrame], out_file: str | Path):
-    fig, ax = plt.subplots(figsize=(11, 5))
-    ax.set_title("Position covariance trace over time")
-    ax.set_xlabel("time from start [s]")
-    ax.set_ylabel("trace(P_xy) [m²]")
-    ax.grid(True, alpha=0.3)
-    t0 = min(float(a["time"].min()) for a in aligned_by_source.values() if not a.empty)
-    for src, a in aligned_by_source.items():
-        if "cov_trace_xy" not in a.columns or a["cov_trace_xy"].isna().all():
+        if "cov_trace" not in a.columns or a["cov_trace"].isna().all():
             continue
-        ax.plot(a["time"] - t0, a["cov_trace_xy"], lw=1.0, label=label(src))
-    ax.legend()
+        ax.plot(a["time"] - t0, a["cov_trace"],
+                lw=2.5, color=FILTER_COLORS.get(src, "#888"), label=label(src))
+    ax.legend(fontsize=_FS["legend"])
     fig.tight_layout()
-    fig.savefig(out_file, dpi=180)
+    fig.savefig(out_file, dpi=150)
     plt.close(fig)
 
 
-def plot_bar(table: pd.DataFrame, x_col: str, y_col: str, title: str, ylabel: str, out_file: str | Path, sort=True):
-    data = table.dropna(subset=[y_col]).copy()
+def plot_bar(data: pd.DataFrame, x_col: str, y_col: str, title: str, ylabel: str,
+             out_file, sort: bool = True):
+    """
+    Bar chart with value labels on top of each bar.
+    Bars are coloured by FILTER_COLORS when x_col contains filter names.
+    """
+    d = data.dropna(subset=[y_col]).copy()
     if sort:
-        data = data.sort_values(y_col)
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.set_title(title)
-    ax.set_ylabel(ylabel)
-    ax.grid(True, axis="y", alpha=0.3)
-    labels = data[x_col].astype(str).tolist()
-    vals = data[y_col].astype(float).tolist()
-    bars = ax.bar(labels, vals)
+        d = d.sort_values(y_col)
+
+    labels = d[x_col].astype(str).tolist()
+    vals   = d[y_col].astype(float).tolist()
+    colors = [FILTER_COLORS.get(l.lower(), "#7f7f7f") for l in labels]
+
+    fig, ax = plt.subplots(figsize=(max(5, len(labels) * 1.5), 5))
+    ax.set_title(title,   fontsize=18)
+    ax.set_ylabel(ylabel, fontsize=16)
+    ax.tick_params(labelsize=16)
+    ax.grid(axis="y", alpha=0.3)
+    bars = ax.bar(labels, vals, color=colors)
     for bar, val in zip(bars, vals):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f"{val:.3g}", ha="center", va="bottom", fontsize=9)
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                f"{val:.3g}", ha="center", va="bottom", fontsize=15)
     fig.tight_layout()
-    fig.savefig(out_file, dpi=180)
+    fig.savefig(out_file, dpi=150)
     plt.close(fig)
 
 
-def plot_heatmap(table: pd.DataFrame, value_col: str, out_file: str | Path, title: str, fmt: str = ".3f"):
-    pivot = table.pivot_table(index="process_scale", columns="measurement_scale", values=value_col, aggfunc="mean")
-    pivot = pivot.sort_index().sort_index(axis=1)
-    fig, ax = plt.subplots(figsize=(7, 6))
-    im = ax.imshow(pivot.values, aspect="auto")
-    ax.set_title(title)
-    ax.set_xlabel("Measurement noise scale")
-    ax.set_ylabel("Process noise scale")
-    ax.set_xticks(np.arange(len(pivot.columns)), [str(c) for c in pivot.columns])
-    ax.set_yticks(np.arange(len(pivot.index)), [str(i) for i in pivot.index])
-    fig.colorbar(im, ax=ax, label=value_col)
+def plot_heatmap(table: pd.DataFrame, value_col: str, title: str, out_file, fmt: str = ".3f"):
+    """
+    Heatmap of value_col over a process_scale x measurement_scale grid.
+    Rows = Q multiplier, columns = R multiplier, cell colour = metric value.
+    """
+    pivot = (table
+             .pivot_table(index="process_scale", columns="measurement_scale",
+                          values=value_col, aggfunc="mean")
+             .sort_index()
+             .sort_index(axis=1))
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    im = ax.imshow(pivot.values, aspect="auto", alpha=0.65)
+    ax.set_title(title,                                    fontsize=_FS["title"])
+    ax.set_xlabel("Measurement noise scale", fontsize=_FS["label"])
+    ax.set_ylabel("Process noise scale",     fontsize=_FS["label"])
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([str(c) for c in pivot.columns], fontsize=_FS["tick"])
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels([str(r) for r in pivot.index], fontsize=_FS["tick"])
+    cb = fig.colorbar(im, ax=ax)
+    cb.ax.tick_params(labelsize=_FS["tick"])
+
     for i in range(pivot.shape[0]):
         for j in range(pivot.shape[1]):
             val = pivot.values[i, j]
             if np.isfinite(val):
-                ax.text(j, i, format(val, fmt), ha="center", va="center")
+                ax.text(j, i, format(val, fmt), ha="center", va="center",
+                        fontsize=_FS["annot"], fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.1", facecolor="white",
+                                  alpha=0.75, edgecolor="none"))
     fig.tight_layout()
-    fig.savefig(out_file, dpi=180)
+    fig.savefig(out_file, dpi=150)
     plt.close(fig)

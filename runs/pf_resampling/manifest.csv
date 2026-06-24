@@ -1,0 +1,5 @@
+csv,method,threshold,setting
+runs/pf_resampling/threshold_t0.0/trajectory_log.csv,threshold,0.0,threshold_t0.0
+runs/pf_resampling/threshold_t0.5/trajectory_log.csv,threshold,0.5,threshold_t0.5
+runs/pf_resampling/threshold_t1.0/trajectory_log.csv,threshold,1.0,threshold_t1.0
+runs/pf_resampling/threshold_t1.5/trajectory_log.csv,threshold,1.5,threshold_t1.5

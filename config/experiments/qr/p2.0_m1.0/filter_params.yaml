@@ -1,0 +1,18 @@
+/**:
+  ros__parameters:
+    r_x:       0.2   
+    r_y:       0.2   
+    r_theta:   0.1   
+    r_vx:      0.2   
+    r_vy:      0.2   
+    r_omega:   0.1  
+    q_x:      0.1
+    q_y:      0.1
+    q_theta:  0.05
+    odom_noise_x:     0.00    
+    odom_noise_y:     0.00   
+    odom_noise_theta: 0.00   
+    q_lm_r:   0.05  
+    q_lm_phi: 0.01 
+    pf_threshold_factor: 0.0
+    skip_n: 1

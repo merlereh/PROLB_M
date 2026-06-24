@@ -1,0 +1,10 @@
+csv,process_scale,measurement_scale,setting,config
+TODO/path/to/trajectory_log.csv,0.5,0.5,p0.5_m0.5,config/experiments/qr/p0.5_m0.5/filter_params.yaml
+TODO/path/to/trajectory_log.csv,0.5,1.0,p0.5_m1.0,config/experiments/qr/p0.5_m1.0/filter_params.yaml
+TODO/path/to/trajectory_log.csv,0.5,2.0,p0.5_m2.0,config/experiments/qr/p0.5_m2.0/filter_params.yaml
+TODO/path/to/trajectory_log.csv,1.0,0.5,p1.0_m0.5,config/experiments/qr/p1.0_m0.5/filter_params.yaml
+TODO/path/to/trajectory_log.csv,1.0,1.0,p1.0_m1.0,config/experiments/qr/p1.0_m1.0/filter_params.yaml
+TODO/path/to/trajectory_log.csv,1.0,2.0,p1.0_m2.0,config/experiments/qr/p1.0_m2.0/filter_params.yaml
+TODO/path/to/trajectory_log.csv,2.0,0.5,p2.0_m0.5,config/experiments/qr/p2.0_m0.5/filter_params.yaml
+TODO/path/to/trajectory_log.csv,2.0,1.0,p2.0_m1.0,config/experiments/qr/p2.0_m1.0/filter_params.yaml
+TODO/path/to/trajectory_log.csv,2.0,2.0,p2.0_m2.0,config/experiments/qr/p2.0_m2.0/filter_params.yaml

@@ -41,8 +41,8 @@
     # -------------------------------------------------------------------------
     # Landmark measurement noise Q_lm
     # -------------------------------------------------------------------------
-    q_lm_r:   0.5   # range noise
-    q_lm_phi: 0.1  # bearing noise
+    q_lm_r:   0.05   # range noise
+    q_lm_phi: 0.01  # bearing noise
 
     # -------------------------------------------------------------------------
     # PF only: threshold factor for resampling
@@ -50,7 +50,7 @@
     #   0.5 = drop particles below 50% of average weight
     #   1.5 = aggressive, only well-above-average particles survive
     # -------------------------------------------------------------------------
-    pf_threshold_factor: 1.0
+    pf_threshold_factor: 0.0
 
 
     # Effective dt multiplier: skip_n=1 → ~50ms, skip_n=5 → ~250ms

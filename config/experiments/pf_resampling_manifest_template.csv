@@ -1,0 +1,5 @@
+csv,method,threshold,setting,config
+TODO/path/to/trajectory_log.csv,threshold,0.0,threshold_t0.0,config/experiments/pf_resampling/threshold_t0.0/filter_params.yaml
+TODO/path/to/trajectory_log.csv,threshold,0.5,threshold_t0.5,config/experiments/pf_resampling/threshold_t0.5/filter_params.yaml
+TODO/path/to/trajectory_log.csv,threshold,1.0,threshold_t1.0,config/experiments/pf_resampling/threshold_t1.0/filter_params.yaml
+TODO/path/to/trajectory_log.csv,threshold,1.5,threshold_t1.5,config/experiments/pf_resampling/threshold_t1.5/filter_params.yaml
