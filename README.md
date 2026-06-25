@@ -73,7 +73,7 @@ export TURTLEBOT3_MODEL=burger
 # Tell Gazebo to look in the package's worlds/ folder first.
 # This makes it pick up the modified turtlebot3_world model (with the landmark)
 # instead of the default system version.
-export GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH:$HOME/ros2_ws/src/probl_m/worlds
+export GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH:$HOME/ros2_ws/src/PROLB_M/worlds
 ```
 
 Then reload:
@@ -117,7 +117,7 @@ source install/setup.bash
 ## Run
 
 ```bash
-cd ~/ros2_ws/src/probl_m
+cd ~/ros2_ws/src/PROLB_M
 ros2 launch probl_m full_simulation.launch.py
 ```
 
