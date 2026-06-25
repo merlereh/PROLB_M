@@ -72,20 +72,42 @@ export TURTLEBOT3_MODEL=burger
 
 ---
 
-## Gazebo World Setup
+## Setup
+
+> **Note:** The commands below use `~/ros2_ws` as the workspace directory.
+> Replace it with the actual path to your workspace if it has a different name.
+
+### 1. Create workspace and clone
+
+```bash
+mkdir -p ~/ros2_ws/src
+cd ~/ros2_ws/src
+git clone https://github.com/merlereh/PRO_Final.git PROLB_M
+```
+
+### 2. Build
+
+```bash
+cd ~/ros2_ws
+colcon build --packages-select probl_m
+source install/setup.bash
+```
+
+### 3. Gazebo World Setup
 
 The simulation requires a small landmark pillar added to the TurtleBot3 world.
-This is done by replacing the default model file with the modified version from this package.
+This is done by replacing the default Nav2 model file with the modified version
+from this package.
 
 **What was changed:** A single cylinder (`radius = 0.05 m`, `height = 0.5 m`) was added
 at position `(1.8, 0.0)` in the world frame. The regular cylinders in the environment have
 `radius = 0.15 m`, so the laser scanner can tell them apart by the arc width of the cluster
 they produce in the scan.
 
-**Run this once after cloning:**
+Run this once after building (workspace name does not matter):
 
 ```bash
-sudo cp ~/ros2_ws/src/PROLB_M/worlds/turtlebot3_world/model.sdf \
+sudo cp $(ros2 pkg prefix probl_m)/share/probl_m/worlds/turtlebot3_world/model.sdf \
         /opt/ros/jazzy/share/nav2_minimal_tb3_sim/models/turtlebot3_world/model.sdf
 ```
 
@@ -98,16 +120,6 @@ sudo apt reinstall ros-jazzy-nav2-minimal-tb3-sim
 The navigation map (`map.yaml` / `map.pgm`) does **not** need to be updated — the landmark
 is small enough that it doesn't block navigation paths and was not present when the map
 was recorded.
-
----
-
-## Build
-
-```bash
-cd ~/ros2_ws
-colcon build --packages-select probl_m
-source install/setup.bash
-```
 
 ---
 
@@ -182,19 +194,19 @@ applies to all three filters automatically.
 r_x, r_y, r_theta   # position and heading process noise
 r_vx, r_vy, r_omega # velocity process noise
 
-# How much we distrust the odometry correction
+        # How much we distrust the odometry correction
 q_x, q_y, q_theta
 
-# Landmark measurement noise (range / bearing)
+        # Landmark measurement noise (range / bearing)
 q_lm_r, q_lm_phi
 
-# Artificial Gaussian noise injected into odometry (0 = disabled)
+        # Artificial Gaussian noise injected into odometry (0 = disabled)
 odom_noise_x, odom_noise_y, odom_noise_theta
 
-# PF resampling: 0.0 = plain multinomial, >0 = drop particles below N × average weight
+        # PF resampling: 0.0 = plain multinomial, >0 = drop particles below N × average weight
 pf_threshold_factor
 
-# Subsampling: 1 = use every message, 5 = use every 5th
+        # Subsampling: 1 = use every message, 5 = use every 5th
 skip_n
 ```
 
