@@ -74,9 +74,6 @@ export TURTLEBOT3_MODEL=burger
 
 ## Setup
 
-> **Note:** The commands below use `~/ros2_ws` as the workspace directory.
-> Replace it with the actual path to your workspace if it has a different name.
-
 ### 1. Create workspace and clone
 
 ```bash
@@ -84,6 +81,8 @@ mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws/src
 git clone https://github.com/merlereh/PRO_Final.git PROLB_M
 ```
+
+This creates a workspace called `ros2_ws` — all commands in this README assume that name.
 
 ### 2. Build
 
