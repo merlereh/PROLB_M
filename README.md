@@ -62,45 +62,42 @@ sudo apt install \
   libeigen3-dev
 ```
 
-### 3. Set environment variables
+### 3. Set the TurtleBot3 model
 
-Add all of these to `~/.bashrc` so they persist across terminals:
+Add to `~/.bashrc` so it persists across terminals:
 
 ```bash
-# TurtleBot3 model
 export TURTLEBOT3_MODEL=burger
-
-# Tell Gazebo to look in the package's worlds/ folder first.
-# This makes it pick up the modified turtlebot3_world model (with the landmark)
-# instead of the default system version.
-export GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH:$HOME/ros2_ws/src/PROLB_M/worlds
-```
-
-Then reload:
-
-```bash
-source ~/.bashrc
 ```
 
 ---
 
-## Gazebo World
+## Gazebo World Setup
 
-The default TurtleBot3 world model was modified to add a small landmark pillar.
-The modified model lives at `worlds/turtlebot3_world/model.sdf` in this package.
+The simulation requires a small landmark pillar added to the TurtleBot3 world.
+This is done by replacing the default model file with the modified version from this package.
 
 **What was changed:** A single cylinder (`radius = 0.05 m`, `height = 0.5 m`) was added
 at position `(1.8, 0.0)` in the world frame. The regular cylinders in the environment have
 `radius = 0.15 m`, so the laser scanner can tell them apart by the arc width of the cluster
 they produce in the scan.
 
-**How Gazebo finds it:** The `GZ_SIM_RESOURCE_PATH` variable (set above) makes Gazebo search
-this package's `worlds/` directory before the system installation. When Nav2 loads the world
-and includes `model://turtlebot3_world`, Gazebo finds the modified version here first.
+**Run this once after cloning:**
+
+```bash
+sudo cp ~/ros2_ws/src/PROLB_M/worlds/turtlebot3_world/model.sdf \
+        /opt/ros/jazzy/share/nav2_minimal_tb3_sim/models/turtlebot3_world/model.sdf
+```
+
+The original can be restored at any time with:
+
+```bash
+sudo apt reinstall ros-jazzy-nav2-minimal-tb3-sim
+```
 
 The navigation map (`map.yaml` / `map.pgm`) does **not** need to be updated — the landmark
-is small enough that it doesn't block navigation paths and was not present when the map was
-recorded.
+is small enough that it doesn't block navigation paths and was not present when the map
+was recorded.
 
 ---
 
